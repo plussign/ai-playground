@@ -15,7 +15,7 @@ def mem(tag):
         )
 
 
-modelscope_model_id = "Tencent-Hunyuan/HY-MT1.5-7B-FP8"
+modelscope_model_id = "Tencent-Hunyuan/HY-MT1.5-1.8B-FP8"
 
 model_dir = snapshot_download(modelscope_model_id)
 
