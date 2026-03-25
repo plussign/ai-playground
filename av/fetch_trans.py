@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener, getproxies
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,12 +17,13 @@ from openai import OpenAI
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 INVALID_WINDOWS_CHARS_RE = re.compile(r"[<>:\"/\\|?*\x00-\x1F]")
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-CODE_RE = re.compile(r"([A-Za-z]{3,6}-\d{3,6})")
+CODE_RE = re.compile(r"([A-Za-z\d]{2,6}-\d{3,6})")
 BRACKET_NOTE_RE = re.compile(r"【[^】]*】")
 MULTI_DOT_RE = re.compile(r"[.。]{2,}")
 MAX_TRANSLATED_LENGTH = 100
 MAX_FILENAME_BYTES = 255
 CACHE_FILE_NAME = "fetch_trans_source_cache.json"
+NOT_FOUND_CACHE_FILE_NAME = "fetch_trans_404_cache.json"
 
 OPENER = build_opener(ProxyHandler())
 DEFAULT_HEADERS = {
@@ -145,6 +147,11 @@ def get_cache_file_path() -> Path:
     return Path(__file__).resolve().parent / CACHE_FILE_NAME
 
 
+def get_not_found_cache_file_path() -> Path:
+    """404 缓存文件路径（脚本所在目录）"""
+    return Path(__file__).resolve().parent / NOT_FOUND_CACHE_FILE_NAME
+
+
 def load_title_cache(logger: logging.Logger) -> dict[str, str]:
     """读取本地缓存：编号 -> 翻译前原文标题"""
     cache_path = get_cache_file_path()
@@ -182,6 +189,41 @@ def save_title_cache(cache: dict[str, str], logger: logging.Logger) -> None:
         logger.info("缓存已保存，共 %d 条: %s", len(cache), cache_path)
     except Exception:
         logger.exception("保存缓存失败: %s", cache_path)
+
+
+def load_not_found_cache(logger: logging.Logger) -> set[str]:
+    """读取本地缓存：404 的编号集合"""
+    cache_path = get_not_found_cache_file_path()
+    if not cache_path.exists():
+        logger.info("未找到 404 缓存文件，将创建新缓存: %s", cache_path)
+        return set()
+
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("读取 404 缓存失败，已忽略缓存文件: %s", cache_path)
+        return set()
+
+    if not isinstance(data, list):
+        logger.error("404 缓存格式错误（应为数组），已忽略: %s", cache_path)
+        return set()
+
+    cache = {item.upper() for item in data if isinstance(item, str)}
+    logger.info("已加载 404 缓存记录 %d 条: %s", len(cache), cache_path)
+    return cache
+
+
+def save_not_found_cache(cache: set[str], logger: logging.Logger) -> None:
+    """保存本地缓存：404 的编号集合"""
+    cache_path = get_not_found_cache_file_path()
+    try:
+        cache_path.write_text(
+            json.dumps(sorted(cache), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("404 缓存已保存，共 %d 条: %s", len(cache), cache_path)
+    except Exception:
+        logger.exception("保存 404 缓存失败: %s", cache_path)
 
 
 def truncate_utf8_bytes(text: str, max_bytes: int) -> str:
@@ -272,15 +314,20 @@ def fetch_all_html_heads(
     root: Path,
     logger: logging.Logger,
     title_cache: dict[str, str],
+    not_found_cache: set[str],
     force: bool = False,
-) -> tuple[list[VideoFileInfo], list[TranslationTask]]:
+    incremental: bool = False,
+) -> tuple[list[VideoFileInfo], list[TranslationTask], bool]:
     """第一步：遍历所有视频文件，优先命中原文缓存，否则获取HTML内容"""
     video_infos = []
     cached_tasks: list[TranslationTask] = []
     processed_codes: set[str] = set()
+    not_found_cache_updated = False
 
     logger.info("开始扫描目录: %s", root)
-    if not force:
+    if incremental:
+        logger.info("增量模式已开启（只处理缓存中没有的编号），使用 -f 可以强制处理所有文件")
+    elif not force:
         logger.info("已处理模式已开启（跳过括号后文件名>20字符的文件），使用 -f 可以强制处理所有文件")
     else:
         logger.info("强制模式，处理所有文件")
@@ -290,7 +337,7 @@ def fetch_all_html_heads(
             old_stem = video_path.stem
             
             # 根据-f参数决定是否跳过已处理过的文件
-            if not force and len(old_stem) > 20:
+            if not force and not incremental and len(old_stem) > 20:
                 logger.info("跳过已处理过的文件（文件名%d个字符）: %s", len(old_stem), video_path.name)
                 continue
             
@@ -301,9 +348,18 @@ def fetch_all_html_heads(
                 logger.info("编号已处理过，跳过: %s", source_code)
                 continue
 
+            if normalized_code in not_found_cache:
+                logger.info("404 缓存命中，跳过HTTP请求: %s", source_code)
+                processed_codes.add(normalized_code)
+                continue
+
             parent_dir_name = video_path.parent.name
 
             if normalized_code in title_cache:
+                if incremental:
+                    logger.info("增量模式：缓存已存在，跳过: %s", source_code)
+                    processed_codes.add(normalized_code)
+                    continue
                 cached_source_title = title_cache[normalized_code]
                 video_info = VideoFileInfo(
                     path=video_path,
@@ -335,11 +391,20 @@ def fetch_all_html_heads(
             )
             processed_codes.add(normalized_code)
 
+        except HTTPError as exc:
+            if exc.code == 404:
+                if normalized_code not in not_found_cache:
+                    not_found_cache.add(normalized_code)
+                    not_found_cache_updated = True
+                processed_codes.add(normalized_code)
+                logger.warning("页面返回 404，已记录并跳过: %s", source_code)
+                continue
+            logger.exception("获取HTML失败，已跳过: %s，错误: %s", video_path, exc)
         except Exception as exc:
             logger.exception("获取HTML失败，已跳过: %s，错误: %s", video_path, exc)
 
     logger.info("共获取 %d 个视频的HTML内容，缓存命中 %d 个", len(video_infos), len(cached_tasks))
-    return video_infos, cached_tasks
+    return video_infos, cached_tasks, not_found_cache_updated
 
 
 def build_translation_tasks(video_infos: list[VideoFileInfo], logger: logging.Logger) -> list[TranslationTask]:
@@ -479,6 +544,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="强制处理所有文件，不跳过已处理过的（不指定时会跳过括号后文件名>20字符的文件）",
     )
+    parser.add_argument(
+        "-i", "--incremental",
+        action="store_true",
+        help="增量模式：只处理缓存中没有的编号，已在缓存中的编号一律跳过",
+    )
     return parser.parse_args()
 
 
@@ -489,15 +559,20 @@ def main() -> None:
 
     logger.info("系统代理检测结果: %s", getproxies())
     title_cache = load_title_cache(logger)
+    not_found_cache = load_not_found_cache(logger)
 
     try:
         # 第一步：优先命中缓存，否则获取HTML内容
-        video_infos, cached_tasks = fetch_all_html_heads(
+        video_infos, cached_tasks, not_found_cache_updated = fetch_all_html_heads(
             target_root,
             logger,
             title_cache=title_cache,
+            not_found_cache=not_found_cache,
             force=args.force,
+            incremental=args.incremental,
         )
+        if not_found_cache_updated:
+            save_not_found_cache(not_found_cache, logger)
         if not video_infos and not cached_tasks:
             logger.info("未找到可处理的视频文件")
             return

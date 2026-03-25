@@ -62,6 +62,7 @@ def fetch_first_1k_html(name_without_ext: str) -> str:
 
 
 def extract_code_from_stem(stem: str) -> str:
+    stem = stem.upper().replace("HEYZO_HD_", "HEYZO-")[:10]
     match = CODE_RE.search(stem)
     if not match:
         raise ValueError("原始文件名中未找到符合格式的编号（3~6字母-3~6数字）")
