@@ -13,3 +13,35 @@
 !*.txt
 !*.csv
 !*.json
+
+# Allow C#/.NET project source under tts_client.
+!tts_client/
+!tts_client/**
+
+# Keep C# project/source files trackable.
+!*.sln
+!*.cs
+!*.csproj
+!*.xaml
+!*.resx
+!*.props
+!*.targets
+!*.appxmanifest
+!*.manifest
+!*.config
+!*.svg
+
+# Ignore .NET/Visual Studio build artifacts for tts_client.
+tts_client/bin/
+tts_client/obj/
+tts_client/.vs/
+tts_client/TestResults/
+tts_client/**/bin/
+tts_client/**/obj/
+tts_client/**/TestResults/
+
+# Ignore common user-specific files for C# tooling.
+tts_client/**/*.user
+tts_client/**/*.suo
+tts_client/**/*.userosscache
+tts_client/**/*.sln.docstates

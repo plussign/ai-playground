@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:viewModels="clr-namespace:TtsClient.ViewModels"
+             x:Class="TtsClient.MainPage"
+             x:DataType="viewModels:MainPageViewModel"
+             BackgroundColor="{StaticResource WindowBackgroundColor}">
+
+    <Grid Padding="24"
+          RowDefinitions="Auto,*,Auto,Auto"
+          RowSpacing="14">
+        <VerticalStackLayout Grid.Row="0" Spacing="10">
+            <Label Text="TTS 配置"
+                   FontSize="18"
+                   FontAttributes="Bold"
+                   TextColor="{StaticResource InputTextColor}" />
+
+            <Entry Placeholder="Base URL，例如 https://your-host.example.com"
+                   Text="{Binding BaseUrl}"
+                   BackgroundColor="{StaticResource InputBackgroundColor}"
+                   TextColor="{StaticResource InputTextColor}"
+                   HeightRequest="46" />
+
+            <Entry Placeholder="API Key"
+                   Text="{Binding ApiKey}"
+                   BackgroundColor="{StaticResource InputBackgroundColor}"
+                   TextColor="{StaticResource InputTextColor}"
+                   HeightRequest="46" />
+
+            <Entry Placeholder="模型名称，例如 gpt-4o-mini-tts"
+                   Text="{Binding ModelName}"
+                   BackgroundColor="{StaticResource InputBackgroundColor}"
+                   TextColor="{StaticResource InputTextColor}"
+                   HeightRequest="46" />
+        </VerticalStackLayout>
+
+        <VerticalStackLayout Grid.Row="1" Spacing="10">
+            <Label Text="待合成文本"
+                   FontSize="18"
+                   FontAttributes="Bold"
+                   TextColor="{StaticResource InputTextColor}" />
+
+            <Editor Text="{Binding InputText}"
+                    Placeholder="在这里填写或粘贴需要 TTS 的文本"
+                    BackgroundColor="{StaticResource InputBackgroundColor}"
+                    TextColor="{StaticResource InputTextColor}"
+                    FontSize="20"
+                    HeightRequest="360" />
+        </VerticalStackLayout>
+
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+            <Label Text="{Binding StatusMessage}"
+                   VerticalTextAlignment="Center"
+                   TextColor="{StaticResource InputTextColor}" />
+
+            <Button Grid.Column="1"
+                    Text="开始推理"
+                    Command="{Binding InferCommand}"
+                    IsEnabled="{Binding CanInfer}"
+                    BackgroundColor="{StaticResource AccentColor}"
+                    TextColor="White" />
+
+            <Button Grid.Column="2"
+                    Text="开始朗读"
+                    Command="{Binding PlayCommand}"
+                    IsEnabled="{Binding CanPlay}"
+                    BackgroundColor="{Binding PlayButtonColor}"
+                    TextColor="White" />
+        </Grid>
+
+        <ActivityIndicator Grid.Row="3"
+                           IsRunning="{Binding IsBusy}"
+                           IsVisible="{Binding IsBusy}"
+                           Color="{StaticResource AccentStrongColor}" />
+    </Grid>
+</ContentPage>

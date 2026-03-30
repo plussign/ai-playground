@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Application xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="TtsClient.App">
+    <Application.Resources>
+        <ResourceDictionary>
+            <Color x:Key="WindowBackgroundColor">#ECE8DB</Color>
+            <Color x:Key="PanelBackgroundColor">#F7F4EA</Color>
+            <Color x:Key="InputBackgroundColor">#E3ECD9</Color>
+            <Color x:Key="InputTextColor">#000000</Color>
+            <Color x:Key="MutedTextColor">#333333</Color>
+            <Color x:Key="AccentColor">#3E6B50</Color>
+            <Color x:Key="AccentStrongColor">#2E5941</Color>
+            <Color x:Key="DisabledColor">#A7B2A1</Color>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

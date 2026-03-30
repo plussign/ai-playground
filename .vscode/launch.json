@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "tts_client: Debug",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "tts_client: debug构建",
+      "program": "${workspaceFolder}/tts_client/bin/Debug/net9.0-windows10.0.19041.0/win10-x64/TtsClient.exe",
+      "cwd": "${workspaceFolder}/tts_client/bin/Debug/net9.0-windows10.0.19041.0/win10-x64",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    },
+    {
+      "name": "tts_client: Release",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "tts_client: release构建",
+      "program": "${workspaceFolder}/tts_client/bin/Release/net9.0-windows10.0.19041.0/win10-x64/TtsClient.exe",
+      "cwd": "${workspaceFolder}/tts_client/bin/Release/net9.0-windows10.0.19041.0/win10-x64",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}
