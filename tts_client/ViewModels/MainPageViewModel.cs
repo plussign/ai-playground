@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
@@ -21,8 +22,10 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
     private string _modelName = string.Empty;
     private string _inputText = string.Empty;
     private string _statusMessage = "请输入配置和文本，然后开始推理。";
-    private string? _lastOutputFilePath;
     private bool _isBusy;
+    private bool _isPlaying;
+    private int _playbackGeneration;
+    private CancellationTokenSource? _playbackCts;
 
     public MainPageViewModel(SettingsService settingsService, OpenAiTtsService ttsService, AudioPlaybackService audioPlaybackService)
     {
@@ -31,7 +34,8 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
         _audioPlaybackService = audioPlaybackService;
 
         InferCommand = new Command(async () => await RunInferenceAsync(), () => CanInfer);
-        PlayCommand = new Command(PlayAudio, () => CanPlay);
+        PlayCommand = new Command(async () => await PlayOrStopAsync(), () => CanPlay);
+        PlaySegmentCommand = new Command<TextSegment>(async segment => await PlaySingleSegmentAsync(segment));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -39,6 +43,10 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
     public ICommand InferCommand { get; }
 
     public ICommand PlayCommand { get; }
+
+    public ICommand PlaySegmentCommand { get; }
+
+    public ObservableCollection<TextSegment> Segments { get; } = [];
 
     public string BaseUrl
     {
@@ -109,6 +117,19 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
         }
     }
 
+    public bool IsPlaying
+    {
+        get => _isPlaying;
+        private set
+        {
+            if (SetProperty(ref _isPlaying, value))
+            {
+                OnPropertyChanged(nameof(PlayButtonText));
+                NotifyCommandStates();
+            }
+        }
+    }
+
     public bool CanInfer =>
         !IsBusy &&
         !string.IsNullOrWhiteSpace(BaseUrl) &&
@@ -116,7 +137,9 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
         !string.IsNullOrWhiteSpace(ModelName) &&
         !string.IsNullOrWhiteSpace(InputText);
 
-    public bool CanPlay => !IsBusy && !string.IsNullOrWhiteSpace(_lastOutputFilePath) && File.Exists(_lastOutputFilePath);
+    public bool CanPlay => IsPlaying || Segments.Count > 0;
+
+    public string PlayButtonText => IsPlaying ? "停止朗读" : "开始朗读";
 
     public Color PlayButtonColor => CanPlay ? EnabledPlayButtonColor : DisabledButtonColor;
 
@@ -163,42 +186,233 @@ public sealed class MainPageViewModel : INotifyPropertyChanged
         try
         {
             IsBusy = true;
-            StatusMessage = "正在请求 TTS 接口并等待 WAV 返回...";
+            CancelPlayback();
 
-            var outputFilePath = await _ttsService.SynthesizeAsync(BaseUrl, ApiKey, ModelName, InputText, CancellationToken.None);
-            _lastOutputFilePath = outputFilePath;
+            var texts = TextSegmenter.Split(InputText);
+            Segments.Clear();
 
-            StatusMessage = $"推理完成，WAV 已保存到 {outputFilePath}";
+            foreach (var text in texts)
+            {
+                Segments.Add(new TextSegment { Text = text });
+            }
+
+            NotifyCommandStates();
+
+            // Auto-start playback concurrently
+            _ = PlayAllSegmentsAsync();
+
+            for (var i = 0; i < Segments.Count; i++)
+            {
+                var segment = Segments[i];
+                segment.Status = "转换中...";
+
+                if (!IsPlaying)
+                {
+                    StatusMessage = $"正在转换第 {i + 1}/{Segments.Count} 段...";
+                }
+
+                try
+                {
+                    var filePath = await _ttsService.SynthesizeAsync(
+                        BaseUrl, ApiKey, ModelName, segment.Text, CancellationToken.None);
+                    segment.FilePath = filePath;
+                    segment.Status = "✓ 已完成";
+                }
+                catch (Exception ex)
+                {
+                    segment.Status = "✗ 失败";
+
+                    if (!IsPlaying)
+                    {
+                        StatusMessage = $"第 {i + 1} 段转换失败: {ex.Message}";
+                    }
+                }
+
+                segment.MarkReady();
+                NotifyCommandStates();
+            }
+
+            var completed = 0;
+            foreach (var s in Segments)
+            {
+                if (!string.IsNullOrWhiteSpace(s.FilePath))
+                {
+                    completed++;
+                }
+            }
+
+            if (!IsPlaying)
+            {
+                StatusMessage = $"推理完成，共 {Segments.Count} 段，成功 {completed} 段。";
+            }
         }
         catch (Exception ex)
         {
-            _lastOutputFilePath = null;
             StatusMessage = ex.Message;
         }
         finally
         {
+            // Mark any remaining segments as ready so playback won't hang
+            foreach (var s in Segments)
+            {
+                s.MarkReady();
+            }
+
             IsBusy = false;
             NotifyCommandStates();
         }
     }
 
-    private void PlayAudio()
+    private async Task PlayOrStopAsync()
     {
-        if (!CanPlay || string.IsNullOrWhiteSpace(_lastOutputFilePath))
+        if (IsPlaying)
         {
-            StatusMessage = "当前没有可播放的 WAV 文件，请先完成推理。";
+            CancelPlayback();
+            StatusMessage = "已停止朗读。";
             return;
         }
 
+        await PlayAllSegmentsAsync();
+    }
+
+    private async Task PlayAllSegmentsAsync()
+    {
+        CancelPlayback();
+        _playbackCts = new CancellationTokenSource();
+        var ct = _playbackCts.Token;
+        var generation = ++_playbackGeneration;
+
+        IsPlaying = true;
+
         try
         {
-            _audioPlaybackService.Play(_lastOutputFilePath);
-            StatusMessage = $"正在通过系统默认音频设备播放 {_lastOutputFilePath}";
+            foreach (var segment in Segments)
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                // Wait for this segment's inference to finish (success or failure)
+                try
+                {
+                    await segment.WaitUntilReadyAsync(ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                // Skip segments that failed or have no audio file
+                if (string.IsNullOrWhiteSpace(segment.FilePath) || !File.Exists(segment.FilePath))
+                {
+                    continue;
+                }
+
+                segment.IsPlaying = true;
+                StatusMessage = $"正在朗读: {TruncateText(segment.Text, 40)}";
+
+                try
+                {
+                    await _audioPlaybackService.PlayAsync(segment.FilePath, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    StatusMessage = $"播放失败: {ex.Message}";
+                }
+                finally
+                {
+                    segment.IsPlaying = false;
+                }
+            }
+
+            if (!ct.IsCancellationRequested)
+            {
+                StatusMessage = "朗读完成。";
+            }
+        }
+        finally
+        {
+            if (_playbackGeneration == generation)
+            {
+                IsPlaying = false;
+                ClearPlayingStates();
+            }
+        }
+    }
+
+    private async Task PlaySingleSegmentAsync(TextSegment? segment)
+    {
+        if (segment?.FilePath is null || !File.Exists(segment.FilePath))
+        {
+            return;
+        }
+
+        CancelPlayback();
+        _playbackCts = new CancellationTokenSource();
+        var ct = _playbackCts.Token;
+        var generation = ++_playbackGeneration;
+
+        ClearPlayingStates();
+        segment.IsPlaying = true;
+        IsPlaying = true;
+
+        try
+        {
+            StatusMessage = $"正在朗读: {TruncateText(segment.Text, 40)}";
+            await _audioPlaybackService.PlayAsync(segment.FilePath, ct);
+
+            if (!ct.IsCancellationRequested)
+            {
+                StatusMessage = "朗读完成。";
+            }
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
-            StatusMessage = ex.Message;
+            StatusMessage = $"播放失败: {ex.Message}";
         }
+        finally
+        {
+            segment.IsPlaying = false;
+
+            if (_playbackGeneration == generation)
+            {
+                IsPlaying = false;
+            }
+        }
+    }
+
+    private void CancelPlayback()
+    {
+        if (_playbackCts is not null)
+        {
+            _playbackCts.Cancel();
+            _playbackCts.Dispose();
+            _playbackCts = null;
+        }
+
+        _audioPlaybackService.Stop();
+        ClearPlayingStates();
+    }
+
+    private void ClearPlayingStates()
+    {
+        foreach (var s in Segments)
+        {
+            s.IsPlaying = false;
+        }
+    }
+
+    private static string TruncateText(string text, int maxLength)
+    {
+        return text.Length <= maxLength ? text : text[..maxLength] + "...";
     }
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
