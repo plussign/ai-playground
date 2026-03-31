@@ -16,6 +16,7 @@ public sealed class OpenAiTtsService
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/wav"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("audio/mpeg"));
 
         var payload = new
         {
@@ -37,32 +38,42 @@ public sealed class OpenAiTtsService
 
         var contentType = response.Content.Headers.ContentType?.MediaType;
         var rawBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-        var wavBytes = NormalizeToWavBytes(rawBytes, contentType);
+        var audio = NormalizeAudioBytes(rawBytes, contentType);
 
-        var outputFilePath = Path.Combine(AppContext.BaseDirectory, $"tts-output-{DateTime.Now:yyyyMMdd-HHmmss}.wav");
-        await File.WriteAllBytesAsync(outputFilePath, wavBytes, cancellationToken);
+        var outputFilePath = Path.Combine(AppContext.BaseDirectory, $"tts-output-{DateTime.Now:yyyyMMdd-HHmmss}.{audio.Extension}");
+        await File.WriteAllBytesAsync(outputFilePath, audio.Bytes, cancellationToken);
         return outputFilePath;
     }
 
-    private static byte[] NormalizeToWavBytes(byte[] responseBytes, string? mediaType)
+    private static AudioPayload NormalizeAudioBytes(byte[] responseBytes, string? mediaType)
     {
         if (IsWav(responseBytes))
         {
-            return responseBytes;
+            return new AudioPayload(responseBytes, "wav");
         }
 
-        if (TryExtractWavFromJson(responseBytes, out var wavFromJson))
+        if (IsMp3(responseBytes))
         {
-            return wavFromJson;
+            return new AudioPayload(responseBytes, "mp3");
+        }
+
+        if (TryExtractAudioFromJson(responseBytes, out var audioFromJson))
+        {
+            return audioFromJson;
+        }
+
+        if (IsLikelyMp3ByContentType(mediaType))
+        {
+            return new AudioPayload(responseBytes, "mp3");
         }
 
         var type = string.IsNullOrWhiteSpace(mediaType) ? "unknown" : mediaType;
-        throw new InvalidOperationException($"接口未返回可播放 WAV 音频，响应类型: {type}。请检查模型是否支持 wav 或兼容接口实现是否正确。\n如果服务返回的是 mp3，请改为 wav 或扩展播放器支持。" );
+        throw new InvalidOperationException($"接口未返回可播放音频（仅支持 WAV/MP3），响应类型: {type}。请检查模型输出格式或兼容接口实现是否正确。");
     }
 
-    private static bool TryExtractWavFromJson(byte[] responseBytes, out byte[] wavBytes)
+    private static bool TryExtractAudioFromJson(byte[] responseBytes, out AudioPayload audio)
     {
-        wavBytes = Array.Empty<byte>();
+        audio = default;
 
         try
         {
@@ -74,7 +85,13 @@ public sealed class OpenAiTtsService
                 var decoded = Convert.FromBase64String(audioBase64);
                 if (IsWav(decoded))
                 {
-                    wavBytes = decoded;
+                    audio = new AudioPayload(decoded, "wav");
+                    return true;
+                }
+
+                if (IsMp3(decoded))
+                {
+                    audio = new AudioPayload(decoded, "mp3");
                     return true;
                 }
             }
@@ -84,6 +101,38 @@ public sealed class OpenAiTtsService
         }
 
         return false;
+    }
+
+    private static bool IsMp3(byte[] bytes)
+    {
+        if (bytes.Length < 3)
+        {
+            return false;
+        }
+
+        if (bytes[0] == (byte)'I' && bytes[1] == (byte)'D' && bytes[2] == (byte)'3')
+        {
+            return true;
+        }
+
+        if (bytes.Length < 2)
+        {
+            return false;
+        }
+
+        // MPEG frame sync: 11 set bits, then valid layer/version bits.
+        return bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0;
+    }
+
+    private static bool IsLikelyMp3ByContentType(string? mediaType)
+    {
+        if (string.IsNullOrWhiteSpace(mediaType))
+        {
+            return false;
+        }
+
+        return mediaType.Contains("mpeg", StringComparison.OrdinalIgnoreCase) ||
+               mediaType.Contains("mp3", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetBase64Field(JsonElement element, string propertyName, out string value)
@@ -159,4 +208,6 @@ public sealed class OpenAiTtsService
 
         return string.Empty;
     }
+
+    private readonly record struct AudioPayload(byte[] Bytes, string Extension);
 }
