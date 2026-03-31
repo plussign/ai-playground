@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:viewModels="clr-namespace:TtsClient.ViewModels"
+             xmlns:models="clr-namespace:TtsClient.Models"
+             x:Class="TtsClient.MainPage"
+             x:Name="ThisPage"
+             x:DataType="viewModels:MainPageViewModel"
+             BackgroundColor="{StaticResource WindowBackgroundColor}">
+
+    <Grid Padding="24"
+          RowDefinitions="Auto,Auto,*,Auto,Auto"
+          RowSpacing="14">
+        <VerticalStackLayout Grid.Row="0" Spacing="10">
+              <HorizontalStackLayout Spacing="6" VerticalOptions="Center">
+                     <Label Text="TTS 配置"
+                            FontSize="14"
+                            FontAttributes="Bold"
+                            TextColor="{StaticResource InputTextColor}" />
+
+                     <Entry Placeholder="Base URL，例如 https://your-host.example.com"
+                            Text="{Binding BaseUrl}"
+                            BackgroundColor="#FF545751"
+                            TextColor="{StaticResource InputTextColor}"
+                            HeightRequest="46"
+                            WidthRequest="400" />
+
+                     <Label Text="KEY"
+                            FontSize="14"
+                            FontAttributes="Bold"
+                            TextColor="{StaticResource InputTextColor}" />
+
+                     <Entry Placeholder="API Key"
+                            Text="{Binding ApiKey}"
+                            BackgroundColor="{StaticResource InputBackgroundColor}"
+                            TextColor="{StaticResource InputTextColor}"
+                            HeightRequest="46"
+                            WidthRequest="200" />
+
+                     <Label Text="MODEL"
+                            FontSize="14"
+                            FontAttributes="Bold"
+                            TextColor="{StaticResource InputTextColor}" />
+                     <Entry Placeholder="模型名称，例如 gpt-4o-mini-tts"
+                            Text="{Binding ModelName}"
+                            BackgroundColor="{StaticResource InputBackgroundColor}"
+                            TextColor="{StaticResource InputTextColor}"
+                            HeightRequest="46"
+                            WidthRequest="200" />
+              </HorizontalStackLayout>
+        </VerticalStackLayout>
+
+        <VerticalStackLayout Grid.Row="1" Spacing="10">
+            <Label Text="待合成文本"
+                   FontSize="18"
+                   FontAttributes="Bold"
+                   TextColor="{StaticResource InputTextColor}" />
+
+            <Editor Text="{Binding InputText}"
+                    Placeholder="在这里填写或粘贴需要 TTS 的文本"
+                    BackgroundColor="{StaticResource InputBackgroundColor}"
+                    TextColor="{StaticResource InputTextColor}"
+                    FontSize="20"
+                    HeightRequest="200" />
+        </VerticalStackLayout>
+
+        <Border Grid.Row="2"
+                BackgroundColor="{StaticResource PanelBackgroundColor}"
+                StrokeShape="RoundRectangle 6"
+                Stroke="{StaticResource DisabledColor}"
+                StrokeThickness="1"
+                Padding="0">
+            <CollectionView ItemsSource="{Binding Segments}">
+                <CollectionView.Header>
+                    <Grid ColumnDefinitions="80,*" Padding="10,6"
+                          BackgroundColor="{StaticResource InputBackgroundColor}">
+                        <Label Text="状态"
+                               FontAttributes="Bold"
+                               FontSize="13"
+                               TextColor="{StaticResource MutedTextColor}" />
+                        <Label Grid.Column="1"
+                               Text="文本内容"
+                               FontAttributes="Bold"
+                               FontSize="13"
+                               TextColor="{StaticResource MutedTextColor}" />
+                    </Grid>
+                </CollectionView.Header>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:TextSegment">
+                        <Grid ColumnDefinitions="80,*" Padding="10,8"
+                              BackgroundColor="{Binding BackgroundColor}">
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer
+                                    Command="{Binding Source={x:Reference ThisPage}, Path=BindingContext.PlaySegmentCommand}"
+                                    CommandParameter="{Binding}" />
+                            </Grid.GestureRecognizers>
+                            <Label Text="{Binding Status}"
+                                   TextColor="{Binding TextColor}"
+                                   FontSize="13"
+                                   VerticalTextAlignment="Center" />
+                            <Label Grid.Column="1"
+                                   Text="{Binding Text}"
+                                   TextColor="{Binding TextColor}"
+                                   FontSize="13"
+                                   VerticalTextAlignment="Center"
+                                   LineBreakMode="TailTruncation"
+                                   MaxLines="2" />
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+                <CollectionView.EmptyView>
+                    <Label Text="点击【开始推理】后，分段列表将显示在此处。"
+                           TextColor="{StaticResource MutedTextColor}"
+                           HorizontalTextAlignment="Center"
+                           VerticalTextAlignment="Center"
+                           Padding="20" />
+                </CollectionView.EmptyView>
+            </CollectionView>
+        </Border>
+
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+            <Label Text="{Binding StatusMessage}"
+                   VerticalTextAlignment="Center"
+                   TextColor="{StaticResource InputTextColor}" />
+
+            <Button Grid.Column="1"
+                    Text="开始推理"
+                    Command="{Binding InferCommand}"
+                    IsEnabled="{Binding CanInfer}"
+                    BackgroundColor="{StaticResource AccentColor}"
+                    TextColor="White" />
+
+            <Button Grid.Column="2"
+                    Text="{Binding PlayButtonText}"
+                    Command="{Binding PlayCommand}"
+                    IsEnabled="{Binding CanPlay}"
+                    BackgroundColor="{Binding PlayButtonColor}"
+                    TextColor="White" />
+        </Grid>
+
+        <ActivityIndicator Grid.Row="4"
+                           IsRunning="{Binding IsBusy}"
+                           IsVisible="{Binding IsBusy}"
+                           Color="{StaticResource AccentStrongColor}" />
+    </Grid>
+</ContentPage>
