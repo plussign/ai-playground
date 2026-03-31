@@ -1,4 +1,5 @@
 import argparse
+import audioop
 import io
 import os
 import tempfile
@@ -10,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
+import lameenc
 import uvicorn
 from modelscope import snapshot_download
 
@@ -71,6 +73,39 @@ def build_silent_wav(duration_seconds: float = 0.2, sample_rate: int = 24000) ->
     return buffer.getvalue()
 
 
+def encode_wav_bytes_to_mp3(wav_bytes: bytes, bitrate_kbps: int = 64) -> bytes:
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        pcm_frames = wav_file.readframes(wav_file.getnframes())
+
+    if not pcm_frames:
+        return b""
+
+    pcm_frames = bytes(pcm_frames) if isinstance(pcm_frames, bytearray) else pcm_frames
+
+    if sample_width != 2:
+        pcm_frames = audioop.lin2lin(pcm_frames, sample_width, 2)
+        sample_width = 2
+        pcm_frames = bytes(pcm_frames) if isinstance(pcm_frames, bytearray) else pcm_frames
+
+    if channels == 2:
+        pcm_frames = audioop.tomono(pcm_frames, sample_width, 0.5, 0.5)
+        pcm_frames = bytes(pcm_frames) if isinstance(pcm_frames, bytearray) else pcm_frames
+    elif channels != 1:
+        raise ValueError(f"unsupported channel count for mp3 encoding: {channels}")
+
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(bitrate_kbps)
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_channels(1)
+    encoder.set_quality(2)
+    mp3_data = encoder.encode(pcm_frames)
+    mp3_data = bytes(mp3_data) if isinstance(mp3_data, bytearray) else mp3_data
+    return mp3_data + encoder.flush()
+
+
 def extract_text(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -117,7 +152,7 @@ def resolve_local_model_path() -> Path | None:
 
 def create_app(args: argparse.Namespace) -> FastAPI:
     app = FastAPI(title="mlx-audio OpenAI TTS Compatible Server")
-    silent_wav = build_silent_wav()
+    silent_mp3 = encode_wav_bytes_to_mp3(build_silent_wav())
 
     model_path = resolve_local_model_path()
     model: Any = None
@@ -147,7 +182,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
         text = extract_text(payload)
         if not text or model is None:
-            return Response(content=silent_wav, media_type="audio/wav", status_code=200)
+            return Response(content=silent_mp3, media_type="audio/mpeg", status_code=200)
 
         try:
             with generation_lock:
@@ -167,15 +202,21 @@ def create_app(args: argparse.Namespace) -> FastAPI:
 
                     wav_path = find_generated_wav(work_dir, file_prefix)
                     if wav_path is None or not wav_path.exists():
-                        return Response(content=silent_wav, media_type="audio/wav", status_code=200)
+                        return Response(content=silent_mp3, media_type="audio/mpeg", status_code=200)
 
                     wav_bytes = wav_path.read_bytes()
                     if not wav_bytes:
-                        return Response(content=silent_wav, media_type="audio/wav", status_code=200)
+                        return Response(content=silent_mp3, media_type="audio/mpeg", status_code=200)
 
-                    return Response(content=wav_bytes, media_type="audio/wav", status_code=200)
+                    mp3_bytes = encode_wav_bytes_to_mp3(wav_bytes, bitrate_kbps=64)
+                    if not mp3_bytes:
+                        return Response(content=silent_mp3, media_type="audio/mpeg", status_code=200)
+
+                    wav_path.unlink(missing_ok=True)
+                    print(f"[mlx-server] sending {len(mp3_bytes)} bytes of mp3.")
+                    return Response(content=mp3_bytes, media_type="audio/mpeg", status_code=200)
         except Exception:
-            return Response(content=silent_wav, media_type="audio/wav", status_code=200)
+            return Response(content=silent_mp3, media_type="audio/mpeg", status_code=200)
 
     return app
 
