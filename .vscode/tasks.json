@@ -101,8 +101,7 @@
         "Release",
         "-r",
         "win-x64",
-        "--self-contained",
-        "true"
+        "/p:PublishSingleFile=true",
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -125,8 +124,7 @@
         "Release",
         "-r",
         "win-x64",
-        "--self-contained",
-        "false",
+        "/p:PublishSingleFile=true",
         "/p:PublishTrimmed=true",
         "/p:TrimMode=partial"
       ],
