@@ -57,6 +57,27 @@ def benchmark_torch_cuda(matrices, batch_size):
     return elapsed, rank_counts
 
 
+def benchmark_torch_xpu(matrices, batch_size):
+    n = len(matrices)
+    xpu_matrices = matrices.to("xpu")
+    # warm up
+    torch.linalg.matrix_rank(xpu_matrices[:min(batch_size, n)])
+    torch.xpu.synchronize()
+
+    all_ranks = []
+    processed = 0
+    start = time.time()
+    while processed < n:
+        end = min(processed + batch_size, n)
+        ranks = torch.linalg.matrix_rank(xpu_matrices[processed:end])
+        all_ranks.append(ranks.cpu())
+        torch.xpu.synchronize()
+        processed = end
+    elapsed = time.time() - start
+    rank_counts = torch.bincount(torch.cat(all_ranks), minlength=9)[:9]
+    return elapsed, rank_counts
+
+
 def print_rank_counts(label, rank_counts):
     print(f"  {label} rank distribution:")
     for r in range(9):
@@ -96,6 +117,15 @@ def main():
     else:
         print("CUDA not available, skipping PyTorch CUDA benchmark.\n")
 
+    # PyTorch XPU
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        print(f"Benchmarking PyTorch (XPU) on {torch.xpu.get_device_name(0)}...")
+        pt_xpu_elapsed, pt_xpu_ranks = benchmark_torch_xpu(torch_matrices, batch_size)
+        print(f"  PyTorch XPU: {pt_xpu_elapsed:.2f}s  ({N / pt_xpu_elapsed:,.0f} matrices/s)")
+        print_rank_counts("PyTorch XPU", pt_xpu_ranks)
+    else:
+        print("XPU not available, skipping PyTorch XPU benchmark.\n")
+
     # Consistency check
     print("=" * 40)
     print("Consistency check:")
@@ -108,6 +138,10 @@ def main():
         pt_cuda_ranks_np = pt_cuda_ranks.numpy() if isinstance(pt_cuda_ranks, torch.Tensor) else pt_cuda_ranks
         match_cuda = np.array_equal(np_ranks_np, pt_cuda_ranks_np)
         print(f"  NumPy CPU vs PyTorch CUDA: {'MATCH' if match_cuda else 'MISMATCH'}")
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        pt_xpu_ranks_np = pt_xpu_ranks.numpy() if isinstance(pt_xpu_ranks, torch.Tensor) else pt_xpu_ranks
+        match_xpu = np.array_equal(np_ranks_np, pt_xpu_ranks_np)
+        print(f"  NumPy CPU vs PyTorch XPU: {'MATCH' if match_xpu else 'MISMATCH'}")
 
     print("\nDone.")
 
