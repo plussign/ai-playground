@@ -6,6 +6,7 @@ N = 10_000_000
 BATCH_SIZE = 200_000
 DURATION = 10
 
+# pip install numpy==2.4.3 --force-reinstall --no-binary numpy -Csetup-args=-Dblas=mkl -Csetup-args=-Dlapack=mkl 
 def benchmark_numpy_cpu(matrices, batch_size, duration):
 
     np.show_config()
