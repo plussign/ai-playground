@@ -45,3 +45,7 @@ tts_client/**/*.user
 tts_client/**/*.suo
 tts_client/**/*.userosscache
 tts_client/**/*.sln.docstates
+
+# Ignore Entire Models Directory
+models/
+*db/
