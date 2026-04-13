@@ -2,7 +2,7 @@ import time
 import numpy as np
 import torch
 
-N = 3_000_000
+N = 6_000_000
 BATCH_SIZE = 1_000_000
 
 
@@ -122,8 +122,8 @@ def benchmark_torch_xpu(matrices: torch.Tensor, matrices2: torch.Tensor, batch_s
 
     start = time.time()
     res = benchmark_torch_calc(xpu_matrices, xpu_matrices2, batch_size, n)
-    elapsed = max(0.0001, time.time() - start)
     torch.xpu.synchronize()
+    elapsed = max(0.0001, time.time() - start)
 
     rank_counts = torch.bincount(all_ranks.cpu(), minlength=mat_dim)[:mat_dim]
 
