@@ -165,14 +165,14 @@ def main():
     print("Benchmarking PyTorch (CPU)...")
     pt_elapsed, pt_ranks = benchmark_torch_cpu(torch_matrices, torch_matrices2, batch_size)
     print(f"  PyTorch CPU: {pt_elapsed:.2f}s  ({N / pt_elapsed:,.0f} matrices/s)")
-    print_rank_counts("PyTorch CPU", pt_ranks)
+    #print_rank_counts("PyTorch CPU", pt_ranks)
 
     # PyTorch CUDA
     if torch.cuda.is_available():
         print(f"Benchmarking PyTorch (CUDA) on {torch.cuda.get_device_name(0)}...")
         pt_cuda_elapsed, pt_cuda_ranks = benchmark_torch_cuda(torch_matrices, torch_matrices2, batch_size)
         print(f"  PyTorch CUDA: {pt_cuda_elapsed:.2f}s  ({N / pt_cuda_elapsed:,.0f} matrices/s)")
-        print_rank_counts("PyTorch CUDA", pt_cuda_ranks)
+        #print_rank_counts("PyTorch CUDA", pt_cuda_ranks)
     else:
         print("CUDA not available, skipping PyTorch CUDA benchmark.\n")
 
@@ -181,7 +181,7 @@ def main():
         print(f"Benchmarking PyTorch (XPU) on {torch.xpu.get_device_name(0)}...")
         pt_xpu_elapsed, pt_xpu_ranks = benchmark_torch_xpu(torch_matrices, torch_matrices2, batch_size)
         print(f"  PyTorch XPU: {pt_xpu_elapsed:.2f}s  ({N / pt_xpu_elapsed:,.0f} matrices/s)")
-        print_rank_counts("PyTorch XPU", pt_xpu_ranks)
+        #print_rank_counts("PyTorch XPU", pt_xpu_ranks)
     else:
         print("XPU not available, skipping PyTorch XPU benchmark.\n")
 
