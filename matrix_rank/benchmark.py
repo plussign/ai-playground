@@ -34,7 +34,6 @@ def benchmark_torch_calc(m1 : torch.Tensor, m2: torch.Tensor, batch_size: int, t
         mat1 = m1[processed:end]
         mat2 = m2[processed:end]
 
-
         #stacked_batch = torch.stack((mat1, mat2), dim=0)  # shape (2, batch_size, 8, 8)
         #sumMatrices = stacked_batch.sum(dim=0)  # shape (batch_size, 8, 8)
 
@@ -49,13 +48,14 @@ def benchmark_torch_calc(m1 : torch.Tensor, m2: torch.Tensor, batch_size: int, t
             row_norms.clamp_min_(1e-12)
             sumView.div_(row_norms)
         
-
         #ranks = torch.linalg.matrix_rank(sumMatrices)
         #all_ranks[processed:end] = ranks
         processed = end
 
-    if m1.device.type == "cuda":
-        torch.cuda.synchronize()
+    # if m1.device.type == "cuda":
+    #     torch.cuda.synchronize()
+    # elif m1.device.type == "xpu":
+    #     torch.xpu.synchronize()
 
     return sumMatrices
 
@@ -88,13 +88,14 @@ def benchmark_torch_cuda(matrices : torch.Tensor, matrices2: torch.Tensor, batch
     cuda_matrices2 = matrices2.to("cuda")
 
     # warm up
-    #benchmark_torch_calc(cuda_matrices, cuda_matrices2, batch_size, batch_size)
-    #torch.cuda.synchronize()
+    benchmark_torch_calc(cuda_matrices, cuda_matrices2, batch_size, batch_size)
+    torch.cuda.synchronize()
 
     all_ranks = torch.zeros(0, dtype=torch.int64, device="cuda")
 
     start = time.time()
     res = benchmark_torch_calc(cuda_matrices, cuda_matrices2, batch_size, n)
+    torch.cuda.synchronize()
     elapsed = max(0.0001, time.time() - start)
 
     rank_counts = torch.bincount(all_ranks.cpu(), minlength=mat_dim)[:mat_dim]
@@ -112,7 +113,7 @@ def benchmark_torch_xpu(matrices: torch.Tensor, matrices2: torch.Tensor, batch_s
 
     xpu_matrices = matrices.to("xpu")
     xpu_matrices2 = matrices2.to("xpu")
-    
+
     # warm up
     benchmark_torch_calc(xpu_matrices, xpu_matrices2, batch_size, batch_size)
     torch.xpu.synchronize()
@@ -120,12 +121,16 @@ def benchmark_torch_xpu(matrices: torch.Tensor, matrices2: torch.Tensor, batch_s
     all_ranks = torch.zeros(0, dtype=torch.int64, device="xpu")
 
     start = time.time()
-    benchmark_torch_calc(xpu_matrices, xpu_matrices2, batch_size, n)
+    res = benchmark_torch_calc(xpu_matrices, xpu_matrices2, batch_size, n)
+    elapsed = max(0.0001, time.time() - start)
     torch.xpu.synchronize()
 
-    elapsed = time.time() - start
-
     rank_counts = torch.bincount(all_ranks.cpu(), minlength=mat_dim)[:mat_dim]
+
+    res = torch.sum(res, dim=(0, 1))
+    print(f"Sum of all elements in result: {res.shape}")
+    print(f"Sum of all elements in result: {res.sum().item():.4f}")
+
     return elapsed, rank_counts
 
 
@@ -174,7 +179,7 @@ def main():
     # PyTorch XPU
     if hasattr(torch, 'xpu') and torch.xpu.is_available():
         print(f"Benchmarking PyTorch (XPU) on {torch.xpu.get_device_name(0)}...")
-        pt_xpu_elapsed, pt_xpu_ranks = benchmark_torch_xpu(torch_matrices, batch_size)
+        pt_xpu_elapsed, pt_xpu_ranks = benchmark_torch_xpu(torch_matrices, torch_matrices2, batch_size)
         print(f"  PyTorch XPU: {pt_xpu_elapsed:.2f}s  ({N / pt_xpu_elapsed:,.0f} matrices/s)")
         print_rank_counts("PyTorch XPU", pt_xpu_ranks)
     else:
