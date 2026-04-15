@@ -7,17 +7,22 @@ SIZE = 2048     # matrix dimension
 
 def check_devices():
     devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         devices.append("xpu")
         print(f"XPU device: {torch.xpu.get_device_name(0)}")
-    else:
-        print("WARNING: XPU not available, only CPU will be benchmarked.")
+    if devices == ["cpu"]:
+        print("WARNING: No accelerator available, only CPU will be benchmarked.")
     print(f"PyTorch: {torch.__version__}")
     print(f"Devices: {devices}\n")
     return devices
 
 
 def sync(device: str):
+    if device == "cuda":
+        torch.cuda.synchronize()
     if device == "xpu":
         torch.xpu.synchronize()
 
@@ -133,20 +138,31 @@ def main():
             print(f" {iters} iterations")
 
     # --- summary table ---
+    accelerator_devices = [device for device in devices if device != "cpu"]
+    device_columns = [(device.upper(), device) for device in devices]
+    speedup_columns = [(f"{device.upper()}x", device) for device in accelerator_devices]
+    header = f"{'Benchmark':<28}"
+    for title, _ in device_columns:
+        header += f" {title:>10}"
+    for title, _ in speedup_columns:
+        header += f" {title:>10}"
+
     print("\n" + "=" * 70)
-    print(f"{'Benchmark':<28} {'CPU':>10} {'XPU':>10} {'Speedup':>10}")
+    print(header)
     print("-" * 70)
     for name, _ in BENCHMARKS:
         row = results.get(name, {})
         cpu_n = row.get("cpu")
-        xpu_n = row.get("xpu")
-        cpu_s = str(cpu_n) if cpu_n is not None else "N/A"
-        xpu_s = str(xpu_n) if xpu_n is not None else "N/A"
-        if cpu_n and xpu_n:
-            speedup = f"{xpu_n / cpu_n:.2f}x"
-        else:
-            speedup = "—"
-        print(f"{name:<28} {cpu_s:>10} {xpu_s:>10} {speedup:>10}")
+        line = f"{name:<28}"
+        for _, device in device_columns:
+            count = row.get(device)
+            count_text = str(count) if count is not None else "N/A"
+            line += f" {count_text:>10}"
+        for _, device in speedup_columns:
+            count = row.get(device)
+            speedup = f"{count / cpu_n:.2f}x" if cpu_n and count else "—"
+            line += f" {speedup:>10}"
+        print(line)
     print("=" * 70)
     print(f"Each benchmark ran for {DURATION}s. Higher iteration count = faster.\n")
 
