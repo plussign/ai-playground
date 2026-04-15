@@ -1,8 +1,62 @@
 import time
 import torch
+import torch.nn.functional as F
 
 DURATION = 10  # seconds per benchmark
-SIZE = 2048     # matrix dimension
+BATCH_SIZE = 128
+MATMUL_SIZE = 1024
+ELEMENTWISE_SIZE = 512
+REDUCTION_SIZE = 512
+CONV_CHANNELS = 32
+CONV_SPATIAL = 32
+FFT_SIZE = 256
+SVD_SIZE = 64
+
+
+def op_matmul(a: torch.Tensor, b: torch.Tensor):
+    return torch.bmm(a, b)
+
+
+def op_elementwise(a: torch.Tensor, b: torch.Tensor):
+    return torch.add(a, b), torch.mul(a, b), torch.sub(a, b)
+
+
+def op_reduction(a: torch.Tensor):
+    return torch.sum(a, dim=(1, 2)), torch.mean(a, dim=(1, 2)), torch.std(a, dim=(1, 2))
+
+
+def op_conv2d(x: torch.Tensor, weight: torch.Tensor):
+    return F.conv2d(x, weight, bias=None, stride=1, padding=1)
+
+
+def op_fft(a: torch.Tensor):
+    return torch.fft.fft2(a)
+
+
+def op_svd(a: torch.Tensor):
+    return torch.linalg.svd(a, full_matrices=False)
+
+
+def compile_jit(op, example_inputs):
+    return torch.jit.trace(op, example_inputs, check_trace=False)
+
+
+def maybe_warmup(device: str, op, *inputs):
+    if device in {"cuda", "xpu"}:
+        op(*inputs)
+        sync(device)
+
+
+def run_benchmark(device: str, op, *inputs) -> int:
+    sync(device)
+    maybe_warmup(device, op, *inputs)
+    count = 0
+    end = time.perf_counter() + DURATION
+    while time.perf_counter() < end:
+        op(*inputs)
+        sync(device)
+        count += 1
+    return count
 
 
 def check_devices():
@@ -28,91 +82,74 @@ def sync(device: str):
 
 
 def bench_matmul(device: str) -> int:
-    a = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    b = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        torch.mm(a, b)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        a = torch.randn(BATCH_SIZE, MATMUL_SIZE, MATMUL_SIZE, device=device, dtype=torch.float32)
+        b = torch.randn(BATCH_SIZE, MATMUL_SIZE, MATMUL_SIZE, device=device, dtype=torch.float32)
+        op = compile_jit(op_matmul, (a, b))
+        return run_benchmark(device, op, a, b)
 
 
 def bench_elementwise(device: str) -> int:
-    a = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    b = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        torch.add(a, b)
-        torch.mul(a, b)
-        torch.sub(a, b)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        a = torch.randn(BATCH_SIZE, ELEMENTWISE_SIZE, ELEMENTWISE_SIZE, device=device, dtype=torch.float32)
+        b = torch.randn(BATCH_SIZE, ELEMENTWISE_SIZE, ELEMENTWISE_SIZE, device=device, dtype=torch.float32)
+        op = compile_jit(op_elementwise, (a, b))
+        return run_benchmark(device, op, a, b)
 
 
 def bench_reduction(device: str) -> int:
-    a = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        torch.sum(a)
-        torch.mean(a)
-        torch.std(a)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        a = torch.randn(BATCH_SIZE, REDUCTION_SIZE, REDUCTION_SIZE, device=device, dtype=torch.float32)
+        op = compile_jit(op_reduction, (a,))
+        return run_benchmark(device, op, a)
 
 
 def bench_conv2d(device: str) -> int:
-    conv = torch.nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False).to(device)
-    x = torch.randn(16, 64, 64, 64, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        conv(x)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        x = torch.randn(
+            BATCH_SIZE,
+            CONV_CHANNELS,
+            CONV_SPATIAL,
+            CONV_SPATIAL,
+            device=device,
+            dtype=torch.float32,
+        )
+        weight = torch.randn(
+            CONV_CHANNELS * 2,
+            CONV_CHANNELS,
+            3,
+            3,
+            device=device,
+            dtype=torch.float32,
+        )
+        op = compile_jit(op_conv2d, (x, weight))
+        return run_benchmark(device, op, x, weight)
 
 
 def bench_fft(device: str) -> int:
-    a = torch.randn(SIZE, SIZE, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        torch.fft.fft2(a)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        a = torch.randn(BATCH_SIZE, FFT_SIZE, FFT_SIZE, device=device, dtype=torch.float32)
+        op = compile_jit(op_fft, (a,))
+        return run_benchmark(device, op, a)
 
 
 def bench_svd(device: str) -> int:
-    a = torch.randn(1024, 1024, device=device, dtype=torch.float32)
-    sync(device)
-    count = 0
-    end = time.perf_counter() + DURATION
-    while time.perf_counter() < end:
-        torch.linalg.svd(a, full_matrices=False)
-        sync(device)
-        count += 1
-    return count
+    with torch.no_grad():
+        a = torch.randn(BATCH_SIZE, SVD_SIZE, SVD_SIZE, device=device, dtype=torch.float32)
+        op = compile_jit(op_svd, (a,))
+        return run_benchmark(device, op, a)
 
 
 BENCHMARKS = [
-    ("MatMul 2048x2048",        bench_matmul),
-    ("Elementwise add/mul/sub", bench_elementwise),
-    ("Reduction sum/mean/std",  bench_reduction),
-    ("Conv2d 64->128 (16x64²)", bench_conv2d),
-    ("FFT2 2048x2048",         bench_fft),
-    ("SVD 1024x1024",          bench_svd),
+    (f"BMM {BATCH_SIZE}x{MATMUL_SIZE}x{MATMUL_SIZE}", bench_matmul),
+    (f"Elementwise {BATCH_SIZE}x{ELEMENTWISE_SIZE}²", bench_elementwise),
+    (f"Reduction {BATCH_SIZE}x{REDUCTION_SIZE}²", bench_reduction),
+    (
+        f"Conv2d {CONV_CHANNELS}->{CONV_CHANNELS * 2} ({BATCH_SIZE}x{CONV_SPATIAL}²)",
+        bench_conv2d,
+    ),
+    (f"FFT2 {BATCH_SIZE}x{FFT_SIZE}x{FFT_SIZE}", bench_fft),
+    (f"SVD {BATCH_SIZE}x{SVD_SIZE}x{SVD_SIZE}", bench_svd),
 ]
 
 
@@ -124,11 +161,7 @@ def main():
         results[name] = {}
         for dev in devices:
             print(f"  [{dev.upper():>3}] {name} ...", end="", flush=True)
-            # warm-up: run a few iterations first
             try:
-                warm_a = torch.randn(128, 128, device=dev)
-                sync(dev)
-                del warm_a
                 iters = fn(dev)
             except Exception as e:
                 print(f" SKIPPED ({e})")
@@ -146,10 +179,11 @@ def main():
         header += f" {title:>10}"
     for title, _ in speedup_columns:
         header += f" {title:>10}"
+    table_width = max(70, len(header))
 
-    print("\n" + "=" * 70)
+    print("\n" + "=" * table_width)
     print(header)
-    print("-" * 70)
+    print("-" * table_width)
     for name, _ in BENCHMARKS:
         row = results.get(name, {})
         cpu_n = row.get("cpu")
@@ -163,7 +197,7 @@ def main():
             speedup = f"{count / cpu_n:.2f}x" if cpu_n and count else "—"
             line += f" {speedup:>10}"
         print(line)
-    print("=" * 70)
+    print("=" * table_width)
     print(f"Each benchmark ran for {DURATION}s. Higher iteration count = faster.\n")
 
 
