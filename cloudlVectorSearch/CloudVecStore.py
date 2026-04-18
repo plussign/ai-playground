@@ -1,50 +1,29 @@
 """
 VectorStore.py
-使用 sentence_transformers + 'BAAI/bge-m3' 模型和 chromadb，
+使用 OpenAI API 兼容的云推理模型和 chromadb，
 递归遍历当前目录下的所有py脚本和json文件，使用合理分块后，将内容存入向量数据库。
 """
 
 import os
 import ast
+import time
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 import chromadb
 from chromadb.config import Settings
 import json
-from modelscope import snapshot_download
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置
-EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
-MODELS_DIR = os.path.join(SCRIPT_DIR, "../models")
-CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../code_vector_db")
+BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
+API_KEY = os.getenv("ark-apikey", "")
+EMBEDDING_MODEL = "doubao-embedding-vision"
+CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../vol_vector_db")
 COLLECTION_NAME = "python_code_blocks"
-
-
-def download_model_from_modelscope(model_name: str, local_dir: str) -> str:
-    """
-    使用 ModelScope SDK 下载模型到本地
-
-    Args:
-        model_name: 模型名称 (如 'Qwen/Qwen3-Embedding-0.6B')
-        local_dir: 本地存储目录
-
-    Returns:
-        本地模型路径
-    """
-    print(f"正在从 ModelScope 下载模型: {model_name}")
-    # 将模型名转换为 ModelScope 格式 (去掉 '/' 前缀)
-    ms_model_name = model_name.lstrip('/')
-    model_dir = snapshot_download(
-        ms_model_name,
-        cache_dir=local_dir,
-        revision='master'
-    )
-    print(f"模型已下载到: {model_dir}")
-    return model_dir
 
 
 class PythonCodeChunker:
@@ -260,15 +239,16 @@ class VectorStore:
     """向量数据库管理器"""
 
     def __init__(self, model_name: str = EMBEDDING_MODEL, db_path: str = CHROMA_DB_PATH):
-        print(f"加载模型: {model_name}")
-        # 先从 ModelScope 下载模型到本地
-        local_model_path = download_model_from_modelscope(model_name, MODELS_DIR)
-        # 从本地路径加载模型
-        self.model = SentenceTransformer(local_model_path)
+        print(f"初始化 OpenAI 客户端: {BASE_URL}")
+        self.client = OpenAI(
+            base_url=BASE_URL,
+            api_key=API_KEY
+        )
+        self.model_name = model_name
 
         print(f"初始化ChromaDB: {db_path}")
-        self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(
+        self.chroma_client = chromadb.PersistentClient(path=db_path)
+        self.collection = self.chroma_client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"description": "Python代码和JSON数据向量数据库"}
         )
@@ -306,8 +286,29 @@ class VectorStore:
             metadatas.append(metadata)
 
         print("生成embeddings...")
-        embeddings = self.model.encode(documents, show_progress_bar=True)
-        embeddings_list = embeddings.tolist()
+        # 批量调用 OpenAI API 获取 embeddings（带重试和延迟）
+        embeddings_list = []
+        batch_size = 10
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
+            # 重试逻辑：最多重试5次，指数退避等待
+            for retry in range(5):
+                try:
+                    response = self.client.embeddings.create(
+                        model=self.model_name,
+                        input=batch
+                    )
+                    batch_embeddings = [item.embedding for item in response.data]
+                    embeddings_list.extend(batch_embeddings)
+                    break
+                except Exception as e:
+                    if retry == 4:  # 最后一次重试仍然失败
+                        raise
+                    wait_time = (2 ** retry) + 1  # 指数退避：1, 3, 5, 9 秒
+                    print(f"  请求失败: {e}, {wait_time}秒后重试...")
+                    time.sleep(wait_time)
+            print(f"  已处理 {min(i + batch_size, len(documents))}/{len(documents)}")
+            time.sleep(0.5)  # 批次间添加延迟
 
         print("写入向量数据库...")
         self.collection.add(
@@ -352,8 +353,8 @@ class VectorStore:
 
     def clear(self):
         """清空向量数据库"""
-        self.client.delete_collection(COLLECTION_NAME)
-        self.collection = self.client.get_or_create_collection(
+        self.chroma_client.delete_collection(COLLECTION_NAME)
+        self.collection = self.chroma_client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"description": "Python代码和JSON数据向量数据库"}
         )

@@ -5,46 +5,24 @@ VectorSearch.py
 
 import os
 import threading
+import time
 
-from sentence_transformers import SentenceTransformer
+from openai import OpenAI
 import chromadb
 from chromadb.config import Settings
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-from modelscope import snapshot_download
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置
-EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
-MODELS_DIR = os.path.join(SCRIPT_DIR, "../models")
-CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../code_vector_db")
+BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
+API_KEY = os.getenv("ark-apikey", "")
+EMBEDDING_MODEL = "doubao-embedding-vision"
+CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../vol_vector_db")
 COLLECTION_NAME = "python_code_blocks"
-
-
-def download_model_from_modelscope(model_name: str, local_dir: str) -> str:
-    """
-    使用 ModelScope SDK 下载模型到本地
-
-    Args:
-        model_name: 模型名称 (如 'Qwen/Qwen3-Embedding-0.6B')
-        local_dir: 本地存储目录
-
-    Returns:
-        本地模型路径
-    """
-    print(f"正在从 ModelScope 下载模型: {model_name}")
-    # 将模型名转换为 ModelScope 格式 (去掉 '/' 前缀)
-    ms_model_name = model_name.lstrip('/')
-    model_dir = snapshot_download(
-        ms_model_name,
-        cache_dir=local_dir,
-        revision='master'
-    )
-    print(f"模型已下载到: {model_dir}")
-    return model_dir
 
 
 class VectorSearch:
@@ -52,16 +30,17 @@ class VectorSearch:
 
     def __init__(self, model_name: str = EMBEDDING_MODEL, db_path: str = CHROMA_DB_PATH, status_callback=None):
         self.status_callback = status_callback
-        self._update_status(f"加载模型: {model_name}")
+        self._update_status(f"初始化 OpenAI 客户端: {BASE_URL}")
 
-        # 先从 ModelScope 下载模型到本地
-        local_model_path = download_model_from_modelscope(model_name, MODELS_DIR)
-        # 从本地路径加载模型
-        self.model = SentenceTransformer(local_model_path)
+        self.client = OpenAI(
+            base_url=BASE_URL,
+            api_key=API_KEY
+        )
+        self.model_name = model_name
 
         self._update_status(f"连接向量数据库: {db_path}")
-        self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(
+        self.chroma_client = chromadb.PersistentClient(path=db_path)
+        self.collection = self.chroma_client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"description": "Python代码和JSON数据向量数据库"}
         )
@@ -96,8 +75,21 @@ class VectorSearch:
         if filter_path:
             where["path"] = filter_path
 
-        # 生成查询的embedding
-        query_embedding = self.model.encode(query).tolist()
+        # 生成查询的embedding（带重试）
+        for retry in range(5):
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model_name,
+                    input=[query]
+                )
+                query_embedding = response.data[0].embedding
+                break
+            except Exception as e:
+                if retry == 4:  # 最后一次重试仍然失败
+                    raise
+                wait_time = (2 ** retry) + 1
+                print(f"  请求失败: {e}, {wait_time}秒后重试...")
+                time.sleep(wait_time)
 
         # 执行搜索
         if where:
