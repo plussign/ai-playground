@@ -1,0 +1,44 @@
+{
+  "name": "AI Playground 配置",
+  "version": "1.0.0",
+  "description": "这是一个用于测试JSON向量化功能的示例配置文件",
+  "models": [
+    {
+      "name": "BAAI/bge-m3",
+      "type": "embedding",
+      "dimensions": 1024,
+      "languages": ["zh", "en"],
+      "description": "通用向量嵌入模型"
+    },
+    {
+      "name": "gpt-4",
+      "type": "chat",
+      "provider": "openai",
+      "max_tokens": 8192,
+      "features": ["推理", "代码生成", "对话"]
+    }
+  ],
+  "settings": {
+    "database": {
+      "type": "chromadb",
+      "path": "../code_vector_db",
+      "collection": "python_code_blocks"
+    },
+    "cache": {
+      "enabled": true,
+      "folder": "../models",
+      "max_size_gb": 10
+    },
+    "processing": {
+      "batch_size": 32,
+      "show_progress": true,
+      "max_workers": 4
+    }
+  },
+  "tags": ["AI", "向量检索", "Python", "JSON", "测试数据"],
+  "metadata": {
+    "created_at": "2024-01-01",
+    "author": "Test User",
+    "notes": "这个文件包含了多种数据结构，用于测试JSON分块和搜索功能"
+  }
+}
