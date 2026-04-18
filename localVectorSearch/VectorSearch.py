@@ -6,45 +6,40 @@ VectorSearch.py
 import os
 import threading
 
-from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-from modelscope import snapshot_download
+import ollama
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置
-EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
-MODELS_DIR = os.path.join(SCRIPT_DIR, "../models")
+EMBEDDING_MODEL = 'qwen3-embed:8b-q8 '
 CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../code_vector_db")
 COLLECTION_NAME = "python_code_blocks"
 
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    return f'Instruct: {task_description}\nQuery:{query}'
 
-def download_model_from_modelscope(model_name: str, local_dir: str) -> str:
+def get_embedding(text: str, model: str = EMBEDDING_MODEL) -> list[float]:
     """
-    使用 ModelScope SDK 下载模型到本地
+    使用 Ollama SDK 获取文本的向量嵌入
 
     Args:
-        model_name: 模型名称 (如 'Qwen/Qwen3-Embedding-0.6B')
-        local_dir: 本地存储目录
+        text: 输入文本
+        model: Ollama 模型名称
 
     Returns:
-        本地模型路径
+        向量嵌入列表
     """
-    print(f"正在从 ModelScope 下载模型: {model_name}")
-    # 将模型名转换为 ModelScope 格式 (去掉 '/' 前缀)
-    ms_model_name = model_name.lstrip('/')
-    model_dir = snapshot_download(
-        ms_model_name,
-        cache_dir=local_dir,
-        revision='master'
-    )
-    print(f"模型已下载到: {model_dir}")
-    return model_dir
+    task = 'Given a web search query, retrieve relevant passages that answer the query'
+    query = get_detailed_instruct(task, text)
+
+    response = ollama.embeddings(model=model, prompt=query)
+    return response['embedding']
 
 
 class VectorSearch:
@@ -52,12 +47,9 @@ class VectorSearch:
 
     def __init__(self, model_name: str = EMBEDDING_MODEL, db_path: str = CHROMA_DB_PATH, status_callback=None):
         self.status_callback = status_callback
-        self._update_status(f"加载模型: {model_name}")
-
-        # 先从 ModelScope 下载模型到本地
-        local_model_path = download_model_from_modelscope(model_name, MODELS_DIR)
-        # 从本地路径加载模型
-        self.model = SentenceTransformer(local_model_path)
+        self.model_name = model_name
+        self._update_status(f"使用 Ollama 模型: {model_name}")
+        self._update_status("请确保 Ollama 服务已启动，并且模型已通过 'ollama pull' 命令拉取")
 
         self._update_status(f"连接向量数据库: {db_path}")
         self.client = chromadb.PersistentClient(path=db_path)
@@ -97,7 +89,7 @@ class VectorSearch:
             where["path"] = filter_path
 
         # 生成查询的embedding
-        query_embedding = self.model.encode(query).tolist()
+        query_embedding = get_embedding(query, self.model_name)
 
         # 执行搜索
         if where:

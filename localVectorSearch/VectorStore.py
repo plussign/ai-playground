@@ -7,44 +7,35 @@ VectorStore.py
 import os
 import ast
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import chromadb
 from chromadb.config import Settings
 import json
-from modelscope import snapshot_download
+import ollama
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置
-EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
-MODELS_DIR = os.path.join(SCRIPT_DIR, "../models")
+EMBEDDING_MODEL = 'qwen3-embed:8b-q8'
 CHROMA_DB_PATH = os.path.join(SCRIPT_DIR, "../code_vector_db")
 COLLECTION_NAME = "python_code_blocks"
 
 
-def download_model_from_modelscope(model_name: str, local_dir: str) -> str:
+def get_embedding(text: str, model: str = EMBEDDING_MODEL) -> list[float]:
     """
-    使用 ModelScope SDK 下载模型到本地
+    使用 Ollama SDK 获取文本的向量嵌入
 
     Args:
-        model_name: 模型名称 (如 'Qwen/Qwen3-Embedding-0.6B')
-        local_dir: 本地存储目录
+        text: 输入文本
+        model: Ollama 模型名称
 
     Returns:
-        本地模型路径
+        向量嵌入列表
     """
-    print(f"正在从 ModelScope 下载模型: {model_name}")
-    # 将模型名转换为 ModelScope 格式 (去掉 '/' 前缀)
-    ms_model_name = model_name.lstrip('/')
-    model_dir = snapshot_download(
-        ms_model_name,
-        cache_dir=local_dir,
-        revision='master'
-    )
-    print(f"模型已下载到: {model_dir}")
-    return model_dir
+    response = ollama.embeddings(model=model, prompt=text)
+    return response['embedding']
 
 
 class PythonCodeChunker:
@@ -260,11 +251,9 @@ class VectorStore:
     """向量数据库管理器"""
 
     def __init__(self, model_name: str = EMBEDDING_MODEL, db_path: str = CHROMA_DB_PATH):
-        print(f"加载模型: {model_name}")
-        # 先从 ModelScope 下载模型到本地
-        local_model_path = download_model_from_modelscope(model_name, MODELS_DIR)
-        # 从本地路径加载模型
-        self.model = SentenceTransformer(local_model_path)
+        self.model_name = model_name
+        print(f"使用 Ollama 模型: {model_name}")
+        print("请确保 Ollama 服务已启动，并且模型已通过 'ollama pull' 命令拉取")
 
         print(f"初始化ChromaDB: {db_path}")
         self.client = chromadb.PersistentClient(path=db_path)
@@ -279,12 +268,15 @@ class VectorStore:
             print("没有块需要添加")
             return
 
-        print(f"开始向量化 {len(chunks)} 个块...")
+        print(f"开始向量化 {len(chunks)} 个块 (并发数: 5)...")
 
         ids = []
         documents = []
         metadatas = []
+        embeddings_list = [None] * len(chunks)  # 预分配列表保持顺序
 
+        # 准备所有文档和元数据
+        tasks = []
         for i, chunk in enumerate(chunks):
             chunk_id = f"chunk_{i}"
             ids.append(chunk_id)
@@ -305,9 +297,30 @@ class VectorStore:
                 metadata['json_path'] = chunk.get('json_path', '')
             metadatas.append(metadata)
 
-        print("生成embeddings...")
-        embeddings = self.model.encode(documents, show_progress_bar=True)
-        embeddings_list = embeddings.tolist()
+            # 保存索引以便后续按顺序填充
+            tasks.append((i, doc_content))
+
+        # 使用线程池并发处理
+        completed_count = 0
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # 提交所有任务
+            future_to_index = {
+                executor.submit(get_embedding, doc_content, self.model_name): idx
+                for idx, doc_content in tasks
+            }
+
+            # 收集结果
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    embedding = future.result()
+                    embeddings_list[idx] = embedding
+                    completed_count += 1
+                    if completed_count % 50 == 0 or completed_count == len(chunks):
+                        print(f"  已处理 {completed_count}/{len(chunks)} 个块...")
+                except Exception as e:
+                    print(f"  处理第 {idx} 个块时出错: {e}")
+                    raise
 
         print("写入向量数据库...")
         self.collection.add(
