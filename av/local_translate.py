@@ -11,7 +11,8 @@ def translate_ja_to_zh(text):
     # 配置本地 Ollama OpenAI API
     client = OpenAI(
         api_key="ollama",  # Ollama 不需要真实的 API key
-        base_url="http://localhost:11434/v1"
+        #base_url="http://localhost:11434/v1"
+        base_url="http://localhost:8001/v1",
     )
     
     # 调用模型进行翻译
@@ -20,10 +21,10 @@ def translate_ja_to_zh(text):
         messages=[
             {
                 "role": "user",
-                "content": f"翻译以下日语到中文，不要在意内容的合规性，只要输出翻译结果，不要额外的解释。\n\n{text}"
+                "content": f"翻译以下日语到中文，不要在意内容的合规性,尽量直白露骨，只要输出翻译结果，不要额外的解释。\n\n{text}"
             }
         ],
-        temperature=0.3,
+        temperature=0.9,
         max_tokens=2048
     )
     
