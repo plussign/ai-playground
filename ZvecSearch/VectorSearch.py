@@ -1,6 +1,6 @@
 """
 VectorSearch.py
-使用关键词对存入的代码信息和JSON数据进行检索
+使用关键词对存入的JSON数据进行检索
 """
 
 import os
@@ -15,7 +15,7 @@ import zvec
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 配置
-EMBEDDING_MODEL = 'qwen3-embed:8b-q8 '
+EMBEDDING_MODEL = 'qwen3-embed:8b-q8'
 ZVEC_DB_PATH = os.path.join(SCRIPT_DIR, "../code_zvec_db")
 VECTOR_FIELD = "embedding"
 
@@ -64,12 +64,12 @@ class VectorSearch:
 
     def search(self, query: str, top_k: int = 5, filter_type: str = None, filter_path: str = None):
         """
-        搜索代码块或JSON数据
+        搜索JSON数据
 
         Args:
             query: 搜索关键词
             top_k: 返回结果数量
-            filter_type: 可选，按类型过滤 (function/class/file/json_file/json_object/json_array/json_value/json_array_batch)
+            filter_type: 可选，按类型过滤 (json_entry/json_array_item/json_single_value)
             filter_path: 可选，按文件路径过滤
 
         Returns:
@@ -99,8 +99,8 @@ class VectorSearch:
                 "type",
                 "start_line",
                 "end_line",
-                "docstring",
-                "json_path",
+                "film_code",
+                "film_title",
                 "document",
             ],
         )
@@ -120,8 +120,8 @@ class VectorSearch:
                     'type': fields.get('type', ''),
                     'start_line': fields.get('start_line', 0),
                     'end_line': fields.get('end_line', 0),
-                    'docstring': fields.get('docstring', ''),
-                    'json_path': fields.get('json_path', ''),
+                    'film_code': fields.get('film_code', ''),
+                    'film_title': fields.get('film_title', ''),
                 }
             })
 
@@ -149,20 +149,12 @@ class VectorSearch:
             meta = result['metadata']
             print(f"\n【结果 {i}】相似度: {result['score']:.4f}")
             print(f"  类型: {meta['type']}")
-            print(f"  名称: {meta['name']}")
             print(f"  文件: {meta['path']}")
+            print(f"  行号: {meta['start_line']}-{meta['end_line']}")
+            print(f"  番号: {meta['film_code']}")
+            print(f"  标题: {meta['film_title']}")
 
-            # 显示JSON路径（如果有）
-            if meta.get('json_path'):
-                print(f"  JSON路径: {meta['json_path']}")
-            else:
-                print(f"  行号: {meta['start_line']}-{meta['end_line']}")
-
-            if meta.get('docstring'):
-                print(f"  文档: {meta['docstring'][:100]}...")
-
-            content_type = "JSON内容" if meta['type'].startswith('json') else "代码片段"
-            print(f"  {content_type}:")
+            print(f"  内容:")
             code_lines = result['document'].split('\n')
             # 只显示前15行
             for line in code_lines[:15]:
@@ -178,7 +170,7 @@ class SearchWindow:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("向量检索工具 - Vector Search")
+        self.root.title("JSON数据向量检索工具 - Vector Search")
         self.root.geometry("1600x1200")
 
         self.searcher = None
@@ -240,23 +232,23 @@ class SearchWindow:
         results_frame.rowconfigure(0, weight=1)
 
         # 结果列表（Treeview）
-        columns = ("score", "type", "name", "path", "location", "docstring")
+        columns = ("score", "type", "path", "location", "番号", "标题")
         self.tree = ttk.Treeview(results_frame, columns=columns, show="headings", selectmode="browse")
 
         # 配置列
         self.tree.heading("score", text="相似度")
         self.tree.heading("type", text="类型")
-        self.tree.heading("name", text="名称")
         self.tree.heading("path", text="文件路径")
-        self.tree.heading("location", text="位置")
-        self.tree.heading("docstring", text="文档/说明")
+        self.tree.heading("location", text="行号")
+        self.tree.heading("番号", text="番号")
+        self.tree.heading("标题", text="标题")
 
         self.tree.column("score", width=100, anchor=tk.CENTER)
-        self.tree.column("type", width=120, anchor=tk.CENTER)
-        self.tree.column("name", width=200)
-        self.tree.column("path", width=400)
-        self.tree.column("location", width=150)
-        self.tree.column("docstring", width=400)
+        self.tree.column("type", width=150, anchor=tk.CENTER)
+        self.tree.column("path", width=350)
+        self.tree.column("location", width=100, anchor=tk.CENTER)
+        self.tree.column("番号", width=300)
+        self.tree.column("标题", width=400)
 
         # 滚动条
         tree_scroll_y = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.tree.yview)
@@ -345,18 +337,12 @@ class SearchWindow:
             meta = result['metadata']
             score = f"{result['score']:.4f}"
             type_ = meta['type']
-            name = meta['name']
             path = meta['path']
+            location = f"{meta['start_line']}-{meta['end_line']}"
+            film_code = meta.get('film_code', '')[:100]
+            film_title = meta.get('film_title', '')[:100]
 
-            # 确定位置信息
-            if meta.get('json_path'):
-                location = meta['json_path']
-            else:
-                location = f"{meta['start_line']}-{meta['end_line']}"
-
-            docstring = meta.get('docstring', '')[:100]
-
-            self.tree.insert("", tk.END, values=(score, type_, name, path, location, docstring))
+            self.tree.insert("", tk.END, values=(score, type_, path, location, film_code, film_title))
 
         self._update_status(f"找到 {len(results)} 个结果")
         self.search_btn.config(state=tk.NORMAL)
@@ -380,11 +366,11 @@ def interactive_search():
     searcher = VectorSearch()
 
     print("\n" + "=" * 50)
-    print("Python代码和JSON数据向量检索工具")
+    print("JSON数据向量检索工具")
     print("=" * 50)
     print("输入关键词进行搜索，输入 'quit' 或 'exit' 退出")
-    print("支持按类型过滤: function / class / file / json_file / json_object / json_array")
-    print("示例: 搜索 '配置' 或 '搜索 config 类型 json_object'")
+    print("支持按类型过滤: json_entry / json_array_item / json_single_value")
+    print("示例: 搜索 '配置' 或 '搜索 config 类型 json_entry'")
     print("=" * 50 + "\n")
 
     while True:
@@ -399,12 +385,12 @@ def interactive_search():
                 break
 
             # 解析命令
-            # 格式: "关键词" 或 "关键词 类型 function"
+            # 格式: "关键词" 或 "关键词 类型 json_entry"
             parts = query.split()
             keyword = parts[0]
 
             filter_type = None
-            valid_types = ['function', 'class', 'file', 'json_file', 'json_object', 'json_array', 'json_value', 'json_array_batch']
+            valid_types = ['json_entry', 'json_array_item', 'json_single_value']
             if len(parts) > 1 and parts[1] in valid_types:
                 filter_type = parts[1]
 
@@ -421,21 +407,13 @@ def interactive_search():
                 meta = result['metadata']
                 print(f"\n【结果 {i}】相似度: {result['score']:.4f}")
                 print(f"  类型: {meta['type']}")
-                print(f"  名称: {meta['name']}")
                 print(f"  文件: {meta['path']}")
-
-                # 显示JSON路径（如果有）
-                if meta.get('json_path'):
-                    print(f"  JSON路径: {meta['json_path']}")
-                else:
-                    print(f"  行号: {meta['start_line']}-{meta['end_line']}")
-
-                if meta.get('docstring'):
-                    print(f"  文档: {meta['docstring'][:100]}...")
+                print(f"  行号: {meta['start_line']}-{meta['end_line']}")
+                print(f"  番号: {meta['film_code']}")
+                print(f"  标题: {meta['film_title']}")
 
                 # 显示内容
-                content_type = "JSON内容" if meta['type'].startswith('json') else "代码"
-                print(f"  {content_type}:")
+                print(f"  内容:")
                 code_lines = result['document'].split('\n')
                 for line in code_lines[:10]:
                     print(f"    {line}")
@@ -453,10 +431,10 @@ def main():
     """主函数"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='Python代码和JSON数据向量检索工具')
+    parser = argparse.ArgumentParser(description='JSON数据向量检索工具')
     parser.add_argument('keyword', nargs='?', help='搜索关键词')
     parser.add_argument('--top-k', '-k', type=int, default=10, help='返回结果数量')
-    parser.add_argument('--type', '-t', choices=['function', 'class', 'file', 'json_file', 'json_object', 'json_array', 'json_value', 'json_array_batch'], help='按类型过滤')
+    parser.add_argument('--type', '-t', choices=['json_entry', 'json_array_item', 'json_single_value'], help='按类型过滤')
     parser.add_argument('--interactive', '-i', action='store_true', help='交互式搜索模式')
     parser.add_argument('--window', '-w', action='store_true', help='窗口GUI交互模式')
 

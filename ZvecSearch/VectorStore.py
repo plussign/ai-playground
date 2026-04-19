@@ -1,7 +1,7 @@
 """
 VectorStore.py
 使用 Ollama 嵌入模型和 zvec，
-递归遍历当前目录下的所有py脚本和json文件，使用合理分块后，将内容存入向量数据库。
+递归遍历当前目录下的所有 json 文件，按行分块后，将内容存入向量数据库。
 """
 
 import os
@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import ollama
 import zvec
 
-from MakeChunks import PythonCodeChunker, JSONChunker
+from MakeChunks import JSONChunker
 
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,8 +19,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 配置
 EMBEDDING_MODEL = 'qwen3-embed:8b-q8'
 ZVEC_DB_PATH = os.path.join(SCRIPT_DIR, "../code_zvec_db")
-COLLECTION_NAME = "python_code_blocks"
+COLLECTION_NAME = "json_data_blocks"
 VECTOR_FIELD = "embedding"
+MAX_WRITE_BATCH_SIZE = 1024
 
 
 def get_embedding(text: str, model: str = EMBEDDING_MODEL) -> list[float]:
@@ -60,8 +61,8 @@ class VectorStore:
                 zvec.FieldSchema(name="type", data_type=zvec.DataType.STRING),
                 zvec.FieldSchema(name="start_line", data_type=zvec.DataType.INT32),
                 zvec.FieldSchema(name="end_line", data_type=zvec.DataType.INT32),
-                zvec.FieldSchema(name="docstring", data_type=zvec.DataType.STRING, nullable=True),
-                zvec.FieldSchema(name="json_path", data_type=zvec.DataType.STRING, nullable=True),
+                zvec.FieldSchema(name="film_code", data_type=zvec.DataType.STRING),
+                zvec.FieldSchema(name="film_title", data_type=zvec.DataType.STRING),
                 zvec.FieldSchema(name="document", data_type=zvec.DataType.STRING),
             ],
             vectors=[
@@ -103,7 +104,7 @@ class VectorStore:
         for i, chunk in enumerate(chunks):
             chunk_id = f"chunk_{i}"
 
-            doc_content = f"[{chunk['type']}] {chunk['name']}\n{chunk['code']}"
+            doc_content = f"[{chunk['type']}] 番号: {chunk['film_code']}\n标题: {chunk['film_title']}"
 
             fields = {
                 'path': chunk['path'],
@@ -111,8 +112,8 @@ class VectorStore:
                 'type': chunk['type'],
                 'start_line': chunk['start_line'],
                 'end_line': chunk['end_line'],
-                'docstring': chunk.get('docstring', ''),
-                'json_path': chunk.get('json_path', ''),
+                'film_code': chunk.get('film_code', ''),
+                'film_title': chunk.get('film_title', ''),
                 'document': doc_content,
             }
             docs.append({'id': chunk_id, 'fields': fields})
@@ -153,7 +154,12 @@ class VectorStore:
                 )
             )
 
-        self.collection.upsert(zvec_docs)
+        total_docs = len(zvec_docs)
+        for start in range(0, total_docs, MAX_WRITE_BATCH_SIZE):
+            end = min(start + MAX_WRITE_BATCH_SIZE, total_docs)
+            self.collection.upsert(zvec_docs[start:end])
+            print(f"  已写入 {end}/{total_docs} 个块...")
+
         self.collection.optimize()
         self.collection.flush()
 
@@ -162,25 +168,16 @@ class VectorStore:
     def build_index(self, directory: str = "."):
         """构建向量索引"""
         print("=" * 50)
-        print("开始构建代码向量索引")
+        print("开始构建JSON数据向量索引")
         print("=" * 50)
 
         all_chunks = []
 
-        print("\n--- 处理Python文件 ---")
-        py_chunker = PythonCodeChunker()
-        py_chunks = py_chunker.chunk_directory(directory)
-        print(f"Python文件: 提取到 {len(py_chunks)} 个代码块")
-        all_chunks.extend(py_chunks)
-
         print("\n--- 处理JSON文件 ---")
         json_chunker = JSONChunker()
-        directory_path = Path(directory)
-        for json_file in directory_path.rglob("*.json"):
-            print(f"处理文件: {json_file}")
-            file_chunks = json_chunker.chunk_file(str(json_file))
-            print(f"  提取到 {len(file_chunks)} 个JSON块")
-            all_chunks.extend(file_chunks)
+        json_chunks = json_chunker.chunk_directory(directory)
+        print(f"JSON文件: 提取到 {len(json_chunks)} 个数据块")
+        all_chunks.extend(json_chunks)
 
         print(f"\n总共提取 {len(all_chunks)} 个块\n")
 
