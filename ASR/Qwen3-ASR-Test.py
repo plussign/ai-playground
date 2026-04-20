@@ -1,6 +1,7 @@
 import torch
 import time
 import argparse
+import ffmpeg
 from pathlib import Path
 from qwen_asr import Qwen3ASRModel
 
@@ -24,8 +25,18 @@ def format_srt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def build_sentence_segments(full_text, time_stamps, comma_split_threshold=20):
+def _strip_trailing_punctuation(text: str) -> str:
+    """Remove trailing comma, period, or semicolon from text."""
+    trailing_punctuation = set("，。；,.;")
+    while text and text[-1] in trailing_punctuation:
+        text = text[:-1].rstrip()
+    return text
+
+
+def build_sentence_segments(full_text, time_stamps, comma_split_threshold=20, time_gap_threshold=3.0, space_gap_threshold=0.3):
     # Strong endings always split; commas split only when the segment is long enough.
+    # Also split when time gap between characters exceeds threshold.
+    # Add space between characters in same segment with moderate time gap.
     strong_sentence_endings = set("。！？；.!?;")
     comma_endings = set("，,")
     punctuation_chars = set("，。！？；：、,.!?;:()（）【】[]《》<>\"'""''—…")
@@ -36,11 +47,13 @@ def build_sentence_segments(full_text, time_stamps, comma_split_threshold=20):
     current_start = None
     current_end = None
     current_char_count = 0
+    prev_ts_end = None
+    prev_was_content_char = False
 
     for ch in full_text:
-        current_text.append(ch)
-
         if ch.isspace() or ch in punctuation_chars:
+            current_text.append(ch)
+            prev_was_content_char = False
             should_split = False
             if ch in strong_sentence_endings:
                 should_split = True
@@ -49,27 +62,53 @@ def build_sentence_segments(full_text, time_stamps, comma_split_threshold=20):
 
             if should_split and current_start is not None and current_end is not None:
                 text = "".join(current_text).strip()
+                text = _strip_trailing_punctuation(text)
                 if text:
                     segments.append((current_start, current_end, text))
                 current_text = []
                 current_start = None
                 current_end = None
                 current_char_count = 0
+                prev_ts_end = None
+                prev_was_content_char = False
             continue
 
         if ts_index >= len(time_stamps):
+            current_text.append(ch)
             continue
 
         ts = time_stamps[ts_index]
         ts_index += 1
 
+        # Check time gap from previous character
+        if prev_ts_end is not None and current_start is not None:
+            time_gap = ts.start_time - prev_ts_end
+            if time_gap >= time_gap_threshold:
+                # Split due to large time gap
+                text = "".join(current_text).strip()
+                text = _strip_trailing_punctuation(text)
+                if text:
+                    segments.append((current_start, current_end, text))
+                current_text = []
+                current_start = None
+                current_end = None
+                current_char_count = 0
+                prev_was_content_char = False
+            elif prev_was_content_char and time_gap >= space_gap_threshold:
+                # Add space for moderate gap between content characters in same segment
+                current_text.append(" ")
+
+        current_text.append(ch)
         if current_start is None:
             current_start = ts.start_time
         current_end = ts.end_time
         current_char_count += 1
+        prev_ts_end = ts.end_time
+        prev_was_content_char = True
 
     if current_start is not None and current_end is not None:
         text = "".join(current_text).strip()
+        text = _strip_trailing_punctuation(text)
         if text:
             segments.append((current_start, current_end, text))
 
@@ -106,13 +145,50 @@ def extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0):
     return adjusted
 
 
+def extract_audio_from_video(video_path: Path) -> tuple[Path, Path | None]:
+    """Extract audio from video file using ffmpeg-python to temp directory"""
+    video_extensions = {'.mp4', '.mkv', '.avi'}
+
+    if video_path.suffix.lower() not in video_extensions:
+        return video_path, None
+
+    # Create temp directory: temp_视频文件名 (without extension)
+    temp_dir = video_path.parent / f"temp_{video_path.stem}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Output audio path (extract as wav)
+    audio_output = temp_dir / f"{video_path.stem}.wav"
+
+    print(f"Extracting audio from video to: {audio_output.resolve()}")
+    try:
+        (
+            ffmpeg
+            .input(str(video_path))
+            .output(str(audio_output), vn=None, acodec='pcm_s16le', ar=16000, ac=1)
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"ffmpeg failed to extract audio: {e.stderr.decode()}") from e
+
+    print(f"Audio extracted to: {audio_output.resolve()}")
+    return audio_output, temp_dir
+
+
 def main():
     parser = argparse.ArgumentParser(description="Qwen3 ASR Transcriber")
     parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
-    parser.add_argument("audio_path", help="Path to audio file")
+    parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
     args = parser.parse_args()
 
-    audio_path = args.audio_path
+    input_path = Path(args.input_path)
+
+    # Check if it's a video file, extract audio if needed
+    video_extensions = {'.mp4', '.mkv', '.avi'}
+    original_input_path = input_path
+    temp_dir_to_cleanup = None
+    if input_path.suffix.lower() in video_extensions:
+        input_path, temp_dir_to_cleanup = extract_audio_from_video(input_path)
 
     if args.device:
         if args.device == "cuda":
@@ -151,7 +227,7 @@ def main():
 
     start_time = time.time()
     results = model.transcribe(
-        audio=audio_path,
+        audio=str(input_path),
         language="Chinese", # set "English" to force the language
         return_time_stamps=True,
     )
@@ -161,17 +237,27 @@ def main():
     print(results[0].language)
     print(results[0].text)
 
-    #or ts in results[0].time_stamps:
+    #for ts in results[0].time_stamps:
     #    print(f"Start: {ts.start_time:.2f}s, End: {ts.end_time:.2f}s, Text: {ts.text}")
 
     segments = build_sentence_segments(results[0].text, results[0].time_stamps)
     segments = extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0)
-    srt_path = Path(audio_path).with_suffix(".srt")
+    # For video files, output srt next to the original video file
+    srt_path = original_input_path.with_suffix(".srt")
     write_srt(segments, srt_path)
     print(f"\nSRT written to: {srt_path.resolve()}")
 
     for idx, (start, end, text) in enumerate(segments, start=1):
         print(f"[{idx}] {start:.2f}s -> {end:.2f}s | {text}")
+
+    # Clean up temp directory if it exists
+    if temp_dir_to_cleanup is not None and temp_dir_to_cleanup.exists():
+        import shutil
+        try:
+            shutil.rmtree(temp_dir_to_cleanup)
+            print(f"\nCleaned up temp directory: {temp_dir_to_cleanup.resolve()}")
+        except Exception as e:
+            print(f"\nWarning: Failed to clean up temp directory {temp_dir_to_cleanup}: {e}")
 
 
 if __name__ == "__main__":
