@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from pydub import AudioSegment
 from qwen_asr import Qwen3ASRModel
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 
 @dataclass
@@ -385,29 +387,68 @@ def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: f
     return chunks
 
 
-def transcribe_chunks(model, chunks, language=None):
-    """Transcribe each chunk and adjust timestamps"""
-    all_text = []
-    all_time_stamps = []
+def transcribe_single_chunk(model, chunk_path, time_offset, language, lock):
+    """Transcribe a single chunk (thread-safe with lock)"""
+    print(f"Transcribing chunk: {chunk_path.name} (offset: {time_offset:.2f}s)")
 
-    for chunk_path, time_offset in chunks:
-        print(f"Transcribing chunk: {chunk_path.name} (offset: {time_offset:.2f}s)")
+    # Use lock to ensure thread safety for model inference
+    with lock:
         results = model.transcribe(
             audio=str(chunk_path),
             language=language,
             return_time_stamps=True,
         )
 
-        if results and len(results) > 0:
-            all_text.append(results[0].text)
-            # Adjust time stamps by chunk offset - use mutable wrapper
-            for ts in results[0].time_stamps:
-                mutable_ts = MutableTimeStamp(
-                    start_time=ts.start_time + time_offset,
-                    end_time=ts.end_time + time_offset,
-                    text=getattr(ts, 'text', '')
-                )
-                all_time_stamps.append(mutable_ts)
+    chunk_text = ""
+    chunk_timestamps = []
+
+    if results and len(results) > 0:
+        chunk_text = results[0].text
+        # Adjust time stamps by chunk offset - use mutable wrapper
+        for ts in results[0].time_stamps:
+            mutable_ts = MutableTimeStamp(
+                start_time=ts.start_time + time_offset,
+                end_time=ts.end_time + time_offset,
+                text=getattr(ts, 'text', '')
+            )
+            chunk_timestamps.append(mutable_ts)
+
+    return time_offset, chunk_text, chunk_timestamps
+
+
+def transcribe_chunks(model, chunks, language=None, concurrency=2):
+    """Transcribe chunks concurrently with thread pool"""
+    chunk_results = []
+    lock = threading.Lock()
+
+    # Use ThreadPoolExecutor for concurrent transcription
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        # Submit all tasks
+        futures = []
+        for chunk_path, time_offset in chunks:
+            future = executor.submit(
+                transcribe_single_chunk,
+                model, chunk_path, time_offset, language, lock
+            )
+            futures.append(future)
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            try:
+                time_offset, chunk_text, chunk_timestamps = future.result()
+                chunk_results.append((time_offset, chunk_text, chunk_timestamps))
+            except Exception as e:
+                print(f"Error transcribing chunk: {e}")
+
+    # Sort results by original time offset to maintain order
+    chunk_results.sort(key=lambda x: x[0])
+
+    # Combine results in order
+    all_text = []
+    all_time_stamps = []
+    for _, chunk_text, chunk_timestamps in chunk_results:
+        all_text.append(chunk_text)
+        all_time_stamps.extend(chunk_timestamps)
 
     full_text = "".join(all_text)
     return full_text, all_time_stamps
@@ -417,6 +458,7 @@ def main():
     parser = argparse.ArgumentParser(description="Qwen3 ASR Transcriber")
     parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
     parser.add_argument("-l", "--language", choices=["ch", "en", "jp"], help="Language: ch=Chinese, en=English, jp=Japanese")
+    parser.add_argument("-c", "--concurrency", type=int, default=5, help="Number of concurrent transcribe tasks (default: 5)")
     parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
     args = parser.parse_args()
 
@@ -499,7 +541,8 @@ def main():
     # Do transcription
     if chunks is not None:
         # Transcribe chunks
-        full_text, all_time_stamps = transcribe_chunks(model, chunks, language)
+        print(f"Using {args.concurrency} concurrent transcribe tasks")
+        full_text, all_time_stamps = transcribe_chunks(model, chunks, language, args.concurrency)
     else:
         # Direct transcription for short audio
         print("Audio is short, transcribing directly...")
