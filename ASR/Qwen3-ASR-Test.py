@@ -2,6 +2,16 @@ import torch
 from pathlib import Path
 from qwen_asr import Qwen3ASRModel
 
+#https://github.com/QwenLM/Qwen3-ASR
+
+# Download through ModelScope (recommended for users in Mainland China)
+# pip install -U modelscope
+# modelscope download --model Qwen/Qwen3-ASR-1.7B  --local_dir ./Qwen3-ASR-1.7B
+# modelscope download --model Qwen/Qwen3-ASR-0.6B --local_dir ./Qwen3-ASR-0.6B
+# modelscope download --model Qwen/Qwen3-ForcedAligner-0.6B --local_dir ./Qwen3-ForcedAligner-0.6B
+
+# pip install -U qwen-asr
+
 
 def format_srt_time(seconds: float) -> str:
     total_ms = max(0, int(round(seconds * 1000)))
