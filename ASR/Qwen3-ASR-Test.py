@@ -1,5 +1,6 @@
 import torch
 import time
+import argparse
 from pathlib import Path
 from qwen_asr import Qwen3ASRModel
 
@@ -104,55 +105,74 @@ def extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0):
 
     return adjusted
 
-if torch.cuda.is_available():
-    device = "cuda:0"
-elif hasattr(torch, "xpu") and torch.xpu.is_available():
-    device = "xpu:0"
-else:
-    device = "cpu"
 
-print(f"Using device: {device}")
+def main():
+    parser = argparse.ArgumentParser(description="Qwen3 ASR Transcriber")
+    parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
+    parser.add_argument("audio_path", help="Path to audio file")
+    args = parser.parse_args()
 
-start_time = time.time()
-model = Qwen3ASRModel.from_pretrained(
-    "Qwen/Qwen3-ASR-1.7B",
-    dtype=torch.bfloat16,
-    device_map=device,
-    # attn_implementation="flash_attention_2",
-    max_inference_batch_size=32, # Batch size limit for inference. -1 means unlimited. Smaller values can help avoid OOM.
-    max_new_tokens=256, # Maximum number of tokens to generate. Set a larger value for long audio input.
-    forced_aligner="Qwen/Qwen3-ForcedAligner-0.6B",
-    forced_aligner_kwargs=dict(
+    audio_path = args.audio_path
+
+    if args.device:
+        if args.device == "cuda":
+            device = "cuda:0"
+        elif args.device == "xpu":
+            device = "xpu:0"
+        else:
+            device = "cpu"
+    else:
+        if torch.cuda.is_available():
+            device = "cuda:0"
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            device = "xpu:0"
+        else:
+            device = "cpu"
+
+    print(f"Using device: {device}")
+
+    start_time = time.time()
+    model = Qwen3ASRModel.from_pretrained(
+        "Qwen/Qwen3-ASR-1.7B",
         dtype=torch.bfloat16,
         device_map=device,
         # attn_implementation="flash_attention_2",
-    ),
-)
-end_time = time.time()
-print(f"from_pretrained time: {end_time - start_time:.2f}s")
+        max_inference_batch_size=32, # Batch size limit for inference. -1 means unlimited. Smaller values can help avoid OOM.
+        max_new_tokens=256, # Maximum number of tokens to generate. Set a larger value for long audio input.
+        forced_aligner="Qwen/Qwen3-ForcedAligner-0.6B",
+        forced_aligner_kwargs=dict(
+            dtype=torch.bfloat16,
+            device_map=device,
+            # attn_implementation="flash_attention_2",
+        ),
+    )
+    end_time = time.time()
+    print(f"from_pretrained time: {end_time - start_time:.2f}s")
 
-audio_path = "../cv/胡桃.wav"
+    start_time = time.time()
+    results = model.transcribe(
+        audio=audio_path,
+        language="Chinese", # set "English" to force the language
+        return_time_stamps=True,
+    )
+    end_time = time.time()
+    print(f"transcribe time: {end_time - start_time:.2f}s")
 
-start_time = time.time()
-results = model.transcribe(
-    audio=audio_path,
-    language="Chinese", # set "English" to force the language
-    return_time_stamps=True,
-)
-end_time = time.time()
-print(f"transcribe time: {end_time - start_time:.2f}s")
+    print(results[0].language)
+    print(results[0].text)
 
-print(results[0].language)
-print(results[0].text)
+    #or ts in results[0].time_stamps:
+    #    print(f"Start: {ts.start_time:.2f}s, End: {ts.end_time:.2f}s, Text: {ts.text}")
 
-for ts in results[0].time_stamps:
-    print(f"Start: {ts.start_time:.2f}s, End: {ts.end_time:.2f}s, Text: {ts.text}")
+    segments = build_sentence_segments(results[0].text, results[0].time_stamps)
+    segments = extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0)
+    srt_path = Path(audio_path).with_suffix(".srt")
+    write_srt(segments, srt_path)
+    print(f"\nSRT written to: {srt_path.resolve()}")
 
-segments = build_sentence_segments(results[0].text, results[0].time_stamps)
-segments = extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0)
-srt_path = Path(audio_path).with_suffix(".srt")
-write_srt(segments, srt_path)
-print(f"\nSRT written to: {srt_path.resolve()}")
+    for idx, (start, end, text) in enumerate(segments, start=1):
+        print(f"[{idx}] {start:.2f}s -> {end:.2f}s | {text}")
 
-for idx, (start, end, text) in enumerate(segments, start=1):
-    print(f"[{idx}] {start:.2f}s -> {end:.2f}s | {text}")
+
+if __name__ == "__main__":
+    main()
