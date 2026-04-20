@@ -49,3 +49,4 @@ tts_client/**/*.sln.docstates
 # Ignore Entire Models Directory
 models/
 *db/
+ASR/Qwen/**
