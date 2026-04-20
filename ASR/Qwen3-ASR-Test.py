@@ -1,4 +1,5 @@
 import torch
+import time
 from pathlib import Path
 from qwen_asr import Qwen3ASRModel
 
@@ -26,7 +27,7 @@ def build_sentence_segments(full_text, time_stamps, comma_split_threshold=20):
     # Strong endings always split; commas split only when the segment is long enough.
     strong_sentence_endings = set("。！？；.!?;")
     comma_endings = set("，,")
-    punctuation_chars = set("，。！？；：、,.!?;:()（）【】[]《》<>\"'“”‘’—…")
+    punctuation_chars = set("，。！？；：、,.!?;:()（）【】[]《》<>\"'""''—…")
 
     segments = []
     ts_index = 0
@@ -103,28 +104,43 @@ def extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0):
 
     return adjusted
 
+if torch.cuda.is_available():
+    device = "cuda:0"
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    device = "xpu:0"
+else:
+    device = "cpu"
+
+print(f"Using device: {device}")
+
+start_time = time.time()
 model = Qwen3ASRModel.from_pretrained(
     "Qwen/Qwen3-ASR-1.7B",
     dtype=torch.bfloat16,
-    device_map="cuda:0",
+    device_map=device,
     # attn_implementation="flash_attention_2",
     max_inference_batch_size=32, # Batch size limit for inference. -1 means unlimited. Smaller values can help avoid OOM.
     max_new_tokens=256, # Maximum number of tokens to generate. Set a larger value for long audio input.
     forced_aligner="Qwen/Qwen3-ForcedAligner-0.6B",
     forced_aligner_kwargs=dict(
         dtype=torch.bfloat16,
-        device_map="cuda:0",
+        device_map=device,
         # attn_implementation="flash_attention_2",
     ),
 )
+end_time = time.time()
+print(f"from_pretrained time: {end_time - start_time:.2f}s")
 
-audio_path = "../cv/胡桃.mp3"
+audio_path = "../cv/胡桃.wav"
 
+start_time = time.time()
 results = model.transcribe(
     audio=audio_path,
     language="Chinese", # set "English" to force the language
     return_time_stamps=True,
 )
+end_time = time.time()
+print(f"transcribe time: {end_time - start_time:.2f}s")
 
 print(results[0].language)
 print(results[0].text)
