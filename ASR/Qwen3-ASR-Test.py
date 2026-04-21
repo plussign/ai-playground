@@ -308,7 +308,14 @@ def get_audio_duration(audio_path: Path) -> float:
     return len(audio) / 1000.0
 
 
-def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: float = 180.0):
+def split_audio_with_vad(
+    audio_path: Path,
+    temp_dir: Path,
+    max_chunk_duration: float = 240.0,
+    vad_threshold: float = 0.35,
+    min_silence_duration_ms: int = 1000,
+    chunk_padding_ms: int = 1000,
+):
     """
     Split audio using Silero VAD into chunks around max_chunk_duration seconds.
     Returns list of (chunk_path, chunk_start_time_seconds)
@@ -330,49 +337,62 @@ def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: f
     speech_timestamps = get_speech_timestamps(
         wav, vad_model,
         sampling_rate=16000,
-        threshold=0.5,
-        min_silence_duration_ms=500
+        threshold=vad_threshold,
+        min_silence_duration_ms=min_silence_duration_ms
     )
 
-    # Load full audio with pydub
-    full_audio = AudioSegment.from_file(str(audio_path))
+    # Load and normalize audio once to avoid inconsistent chunk encoding.
+    full_audio = (
+        AudioSegment.from_file(str(audio_path))
+        .set_frame_rate(16000)
+        .set_channels(1)
+        .set_sample_width(2)
+    )
 
-    # Group speech segments into chunks of approximately max_chunk_duration
+    if not speech_timestamps:
+        chunk_path = temp_dir / f"chunk_0000_0_{len(full_audio)}.wav"
+        full_audio.export(str(chunk_path), format="wav")
+        print("No speech regions detected by VAD, using full audio as a single chunk.")
+        del vad_model
+        del utils
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+        return [(chunk_path, 0.0)]
+
+    # Group speech segments into chunks, splitting only at silence boundaries
+    # and keeping enough context around boundaries.
     chunks = []
-    current_chunk_start = 0  # in milliseconds
-    current_chunk_end = 0
+    max_chunk_ms = int(max_chunk_duration * 1000)
+    speech_ranges_ms = [(int(ts['start'] / 16), int(ts['end'] / 16)) for ts in speech_timestamps]
 
-    for ts in speech_timestamps:
-        # Convert sample indices to milliseconds (16k samples/sec)
-        start_ms = ts['start'] / 16
-        end_ms = ts['end'] / 16
+    chunk_start_ms = max(0, speech_ranges_ms[0][0] - chunk_padding_ms)
+    chunk_end_ms = min(len(full_audio), speech_ranges_ms[0][1] + chunk_padding_ms)
+    prev_speech_end_ms = speech_ranges_ms[0][1]
 
-        # Check if adding this segment would exceed max chunk duration
-        potential_end = max(current_chunk_end, end_ms + 200)  # +200ms buffer
-        if current_chunk_start > 0 and (potential_end - current_chunk_start) / 1000.0 > max_chunk_duration:
-            # Finalize current chunk
-            chunk_start_ms = max(0, current_chunk_start - 200)
-            chunk_end_ms = current_chunk_end + 200
+    for speech_start_ms, speech_end_ms in speech_ranges_ms[1:]:
+        candidate_end_ms = min(len(full_audio), speech_end_ms + chunk_padding_ms)
+        would_exceed = (candidate_end_ms - chunk_start_ms) > max_chunk_ms
+        has_clear_boundary = (speech_start_ms - prev_speech_end_ms) >= min_silence_duration_ms
+
+        if would_exceed and has_clear_boundary:
             chunk_path = temp_dir / f"chunk_{len(chunks):04d}_{int(chunk_start_ms)}_{int(chunk_end_ms)}.wav"
             chunk = full_audio[chunk_start_ms:chunk_end_ms]
             chunk.export(str(chunk_path), format="wav")
             chunks.append((chunk_path, chunk_start_ms / 1000.0))
-            # Start new chunk
-            current_chunk_start = start_ms
-            current_chunk_end = end_ms
-        else:
-            current_chunk_end = max(current_chunk_end, end_ms)
-            if current_chunk_start == 0:
-                current_chunk_start = start_ms
 
-    # Add the last chunk
-    if current_chunk_start < len(full_audio):
-        chunk_start_ms = max(0, current_chunk_start - 200)
-        chunk_end_ms = min(len(full_audio), current_chunk_end + 200)
-        chunk_path = temp_dir / f"chunk_{len(chunks):04d}_{int(chunk_start_ms)}_{int(chunk_end_ms)}.wav"
-        chunk = full_audio[chunk_start_ms:chunk_end_ms]
-        chunk.export(str(chunk_path), format="wav")
-        chunks.append((chunk_path, chunk_start_ms / 1000.0))
+            chunk_start_ms = max(0, speech_start_ms - chunk_padding_ms)
+            chunk_end_ms = min(len(full_audio), speech_end_ms + chunk_padding_ms)
+        else:
+            chunk_end_ms = max(chunk_end_ms, candidate_end_ms)
+
+        prev_speech_end_ms = speech_end_ms
+
+    chunk_path = temp_dir / f"chunk_{len(chunks):04d}_{int(chunk_start_ms)}_{int(chunk_end_ms)}.wav"
+    chunk = full_audio[chunk_start_ms:chunk_end_ms]
+    chunk.export(str(chunk_path), format="wav")
+    chunks.append((chunk_path, chunk_start_ms / 1000.0))
 
     # Clean up VAD model to free VRAM
     print(f"Split audio into {len(chunks)} chunks, releasing VAD model...")
@@ -475,6 +495,7 @@ def main():
     parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
     parser.add_argument("-l", "--language", choices=["ch", "en", "jp"], help="Language: ch=Chinese, en=English, jp=Japanese")
     parser.add_argument("-c", "--concurrency", type=int, default=5, help="Number of concurrent transcribe tasks (default: 5)")
+    parser.add_argument("-m", "--max_chunk", type=float, default=60.0, help="Maximum chunk duration in seconds for VAD splitting (default: 60)")
     parser.add_argument("--debug", action="store_true", help="Debug mode: keep temp files and generate chunk-level LRCs")
     parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
     args = parser.parse_args()
@@ -531,7 +552,7 @@ def main():
         chunk_temp_dir.mkdir(parents=True, exist_ok=True)
 
         # Split audio first (VAD model will be released after this)
-        chunks = split_audio_with_vad(input_path, chunk_temp_dir, max_chunk_duration=180.0)
+        chunks = split_audio_with_vad(input_path, chunk_temp_dir, max_chunk_duration=args.max_chunk)
 
     # Now load ASR model (VAD has been released if used)
     start_time = time.time()
