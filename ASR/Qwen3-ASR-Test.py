@@ -351,10 +351,9 @@ def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: f
         potential_end = max(current_chunk_end, end_ms + 200)  # +200ms buffer
         if current_chunk_start > 0 and (potential_end - current_chunk_start) / 1000.0 > max_chunk_duration:
             # Finalize current chunk
-            chunk_path = temp_dir / f"chunk_{len(chunks):04d}.wav"
-            # Add 200ms buffer at start and end
             chunk_start_ms = max(0, current_chunk_start - 200)
             chunk_end_ms = current_chunk_end + 200
+            chunk_path = temp_dir / f"chunk_{len(chunks):04d}_{int(chunk_start_ms)}_{int(chunk_end_ms)}.wav"
             chunk = full_audio[chunk_start_ms:chunk_end_ms]
             chunk.export(str(chunk_path), format="wav")
             chunks.append((chunk_path, chunk_start_ms / 1000.0))
@@ -368,9 +367,9 @@ def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: f
 
     # Add the last chunk
     if current_chunk_start < len(full_audio):
-        chunk_path = temp_dir / f"chunk_{len(chunks):04d}.wav"
         chunk_start_ms = max(0, current_chunk_start - 200)
         chunk_end_ms = min(len(full_audio), current_chunk_end + 200)
+        chunk_path = temp_dir / f"chunk_{len(chunks):04d}_{int(chunk_start_ms)}_{int(chunk_end_ms)}.wav"
         chunk = full_audio[chunk_start_ms:chunk_end_ms]
         chunk.export(str(chunk_path), format="wav")
         chunks.append((chunk_path, chunk_start_ms / 1000.0))
@@ -387,7 +386,7 @@ def split_audio_with_vad(audio_path: Path, temp_dir: Path, max_chunk_duration: f
     return chunks
 
 
-def transcribe_single_chunk(model, chunk_path, time_offset, language, lock):
+def transcribe_single_chunk(model, chunk_path, time_offset, language, lock, debug=False):
     """Transcribe a single chunk (thread-safe with lock)"""
     print(f"Transcribing chunk: {chunk_path.name} (offset: {time_offset:.2f}s)")
 
@@ -401,6 +400,7 @@ def transcribe_single_chunk(model, chunk_path, time_offset, language, lock):
 
     chunk_text = ""
     chunk_timestamps = []
+    chunk_local_timestamps = []
 
     if results and len(results) > 0:
         chunk_text = results[0].text
@@ -412,11 +412,27 @@ def transcribe_single_chunk(model, chunk_path, time_offset, language, lock):
                 text=getattr(ts, 'text', '')
             )
             chunk_timestamps.append(mutable_ts)
+            # Also save local timestamps for chunk-level LRC
+            local_ts = MutableTimeStamp(
+                start_time=ts.start_time,
+                end_time=ts.end_time,
+                text=getattr(ts, 'text', '')
+            )
+            chunk_local_timestamps.append(local_ts)
+
+    # If debug mode, write chunk-level LRC
+    if debug:
+        chunk_lrc_path = chunk_path.with_suffix('.lrc')
+        if chunk_text and chunk_local_timestamps:
+            chunk_segments = build_sentence_segments(chunk_text, chunk_local_timestamps, add_spaces=True)
+            chunk_segments = extend_segment_end_times(chunk_segments, min_next_gap=0.2, max_extend=1.0)
+            write_lrc(chunk_segments, chunk_lrc_path)
+            print(f"Chunk LRC written to: {chunk_lrc_path.resolve()}")
 
     return time_offset, chunk_text, chunk_timestamps
 
 
-def transcribe_chunks(model, chunks, language=None, concurrency=2):
+def transcribe_chunks(model, chunks, language=None, concurrency=2, debug=False):
     """Transcribe chunks concurrently with thread pool"""
     chunk_results = []
     lock = threading.Lock()
@@ -428,7 +444,7 @@ def transcribe_chunks(model, chunks, language=None, concurrency=2):
         for chunk_path, time_offset in chunks:
             future = executor.submit(
                 transcribe_single_chunk,
-                model, chunk_path, time_offset, language, lock
+                model, chunk_path, time_offset, language, lock, debug
             )
             futures.append(future)
 
@@ -459,6 +475,7 @@ def main():
     parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
     parser.add_argument("-l", "--language", choices=["ch", "en", "jp"], help="Language: ch=Chinese, en=English, jp=Japanese")
     parser.add_argument("-c", "--concurrency", type=int, default=5, help="Number of concurrent transcribe tasks (default: 5)")
+    parser.add_argument("--debug", action="store_true", help="Debug mode: keep temp files and generate chunk-level LRCs")
     parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
     args = parser.parse_args()
 
@@ -519,14 +536,15 @@ def main():
     # Now load ASR model (VAD has been released if used)
     start_time = time.time()
     print("Loading Qwen3 ASR model...")
+    script_dir = Path(__file__).parent
     model = Qwen3ASRModel.from_pretrained(
-        "Qwen/Qwen3-ASR-1.7B",
+        str(script_dir / "Qwen/Qwen3-ASR-1.7B"),
         dtype=torch.bfloat16,
         device_map=device,
         # attn_implementation="flash_attention_2",
         max_inference_batch_size=-1, # Batch size limit for inference. -1 means unlimited. Smaller values can help avoid OOM.
         max_new_tokens=2048, # Maximum number of tokens to generate. Set a larger value for long audio input.
-        forced_aligner="Qwen/Qwen3-ForcedAligner-0.6B",
+        forced_aligner=str(script_dir / "Qwen/Qwen3-ForcedAligner-0.6B"),
         forced_aligner_kwargs=dict(
             dtype=torch.bfloat16,
             device_map=device,
@@ -542,7 +560,7 @@ def main():
     if chunks is not None:
         # Transcribe chunks
         print(f"Using {args.concurrency} concurrent transcribe tasks")
-        full_text, all_time_stamps = transcribe_chunks(model, chunks, language, args.concurrency)
+        full_text, all_time_stamps = transcribe_chunks(model, chunks, language, args.concurrency, args.debug)
     else:
         # Direct transcription for short audio
         print("Audio is short, transcribing directly...")
@@ -590,22 +608,29 @@ def main():
     for idx, (start, end, text) in enumerate(segments, start=1):
         print(f"[{idx}] {start:.2f}s -> {end:.2f}s | {text}")
 
-    # Clean up temp directories
-    if chunk_temp_dir is not None and chunk_temp_dir.exists():
-        import shutil
-        try:
-            shutil.rmtree(chunk_temp_dir)
-            print(f"\nCleaned up chunk temp directory: {chunk_temp_dir.resolve()}")
-        except Exception as e:
-            print(f"\nWarning: Failed to clean up chunk temp directory {chunk_temp_dir}: {e}")
+    # Clean up temp directories (skip if debug mode)
+    if not args.debug:
+        if chunk_temp_dir is not None and chunk_temp_dir.exists():
+            import shutil
+            try:
+                shutil.rmtree(chunk_temp_dir)
+                print(f"\nCleaned up chunk temp directory: {chunk_temp_dir.resolve()}")
+            except Exception as e:
+                print(f"\nWarning: Failed to clean up chunk temp directory {chunk_temp_dir}: {e}")
 
-    if temp_dir_to_cleanup is not None and temp_dir_to_cleanup.exists():
-        import shutil
-        try:
-            shutil.rmtree(temp_dir_to_cleanup)
-            print(f"\nCleaned up temp directory: {temp_dir_to_cleanup.resolve()}")
-        except Exception as e:
-            print(f"\nWarning: Failed to clean up temp directory {temp_dir_to_cleanup}: {e}")
+        if temp_dir_to_cleanup is not None and temp_dir_to_cleanup.exists():
+            import shutil
+            try:
+                shutil.rmtree(temp_dir_to_cleanup)
+                print(f"\nCleaned up temp directory: {temp_dir_to_cleanup.resolve()}")
+            except Exception as e:
+                print(f"\nWarning: Failed to clean up temp directory {temp_dir_to_cleanup}: {e}")
+    else:
+        print(f"\nDebug mode enabled, keeping temp directories:")
+        if chunk_temp_dir is not None:
+            print(f"  Chunk dir: {chunk_temp_dir.resolve()}")
+        if temp_dir_to_cleanup is not None:
+            print(f"  Temp dir: {temp_dir_to_cleanup.resolve()}")
 
 
 if __name__ == "__main__":
