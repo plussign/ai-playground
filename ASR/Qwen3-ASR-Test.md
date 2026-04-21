@@ -34,11 +34,12 @@ python Qwen3-ASR-Test.py [选项] <输入文件>
 # 基本选项
 -d, --device       设备选择：cuda / xpu / cpu（默认自动检测）
 -l, --language     语言：ch（中文）/ en（英文）/ jp（日语）
--c, --concurrency  并发转录任务数（默认 5）
--m, --max_chunk    VAD 分段的最大时长（秒，默认 60）
+-c, --concurrency  并发转录任务数（默认 2）
+-m, --max_chunk    VAD 分段的最大时长（秒，默认 10）
+-v, --vad-thres    VAD 语音检测阈值（默认 0.3）
 
-# 音频预处理选项
---preprocess       启用音频预处理（高通滤波 + AGC）
+# 音频预处理选项（默认启用）
+--no-preprocess    禁用音频预处理（高通滤波 + AGC）
 --highpass 80      高通滤波器截止频率（Hz，默认 80，设为 0 禁用）
 --no-agc           禁用自动增益控制（AGC）
 
@@ -55,14 +56,14 @@ python Qwen3-ASR-Test.py -d cuda -l en video.mp4
 # 使用 8 个并发任务
 python Qwen3-ASR-Test.py -c 8 -l ch long_audio.wav
 
-# 启用音频预处理（高通滤波 + AGC）
-python Qwen3-ASR-Test.py --preprocess -l ch noisy_audio.wav
+# 禁用音频预处理
+python Qwen3-ASR-Test.py --no-preprocess -l ch clean_audio.wav
 
 # 自定义高通截止频率为 100Hz
-python Qwen3-ASR-Test.py --preprocess --highpass 100 input.wav
+python Qwen3-ASR-Test.py --highpass 100 input.wav
 
 # 只使用高通滤波，不使用 AGC
-python Qwen3-ASR-Test.py --preprocess --no-agc input.wav
+python Qwen3-ASR-Test.py --no-agc input.wav
 ```
 
 ## 工作流程
@@ -91,13 +92,13 @@ python Qwen3-ASR-Test.py --preprocess --no-agc input.wav
 
 ## 音频预处理说明
 
-当音频质量较差（背景噪声大、音量不均衡）时，可以使用 `--preprocess` 参数启用预处理：
+音频预处理默认启用（高通滤波 + AGC）。当音频质量较好不需要预处理时，可以使用 `--no-preprocess` 参数禁用：
 
 - **高通滤波**：移除 80Hz 以下的低频噪声（如空调声、电流声等），可通过 `--highpass` 调整截止频率
 - **自动增益控制**：自动将音频音量标准化到合适水平，避免音量忽大忽小
 
 **VAD 参数说明**：
-- `vad_threshold` 默认值为 0.35，值越大越容易切分（更容易检测到静音），值越小越不容易切分
+- `-v, --vad-thres` 默认值为 0.3，值越大越容易切分（更容易检测到静音），值越小越不容易切分
 
 ## 输出示例
 

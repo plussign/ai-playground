@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:zvec.org)"
+      "WebFetch(domain:zvec.org)",
+      "Bash(pip show *)",
+      "Bash(pip install *)"
     ]
   }
 }

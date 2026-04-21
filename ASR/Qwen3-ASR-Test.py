@@ -265,7 +265,7 @@ def extend_segment_end_times(segments, min_next_gap=0.2, max_extend=1.0):
 
 def extract_audio_from_video(video_path: Path) -> tuple[Path, Path | None]:
     """Extract audio from video file using ffmpeg command line to temp directory"""
-    video_extensions = {'.mp4', '.mkv', '.avi'}
+    video_extensions = {'.mp4', '.mkv', '.avi', '.ts'}
 
     if video_path.suffix.lower() not in video_extensions:
         return video_path, None
@@ -280,8 +280,13 @@ def extract_audio_from_video(video_path: Path) -> tuple[Path, Path | None]:
     print(f"Extracting audio from video to: {audio_output.resolve()}")
     try:
         # Use subprocess to call ffmpeg directly
-        cmd = [
-            'ffmpeg',
+        # For .ts files, use -fflags +igndts to handle timestamp discontinuities
+        # common in broadcast recordings (prevents audio packets from being dropped
+        # when cumulative negative offsets cause timestamps to go negative)
+        cmd = ['ffmpeg']
+        if video_path.suffix.lower() == '.ts':
+            cmd += ['-fflags', '+igndts', '-avoid_negative_ts', 'make_zero']
+        cmd += [
             '-i', str(video_path),
             '-vn',
             '-acodec', 'pcm_s16le',
@@ -357,8 +362,8 @@ def preprocess_audio(audio_path: Path, output_path: Path, highpass_cutoff: float
 def split_audio_with_vad(
     audio_path: Path,
     temp_dir: Path,
-    max_chunk_duration: float = 240.0,
-    vad_threshold: float = 0.35,
+    max_chunk_duration: float = 10.0,
+    vad_threshold: float = 0.30,
     min_silence_duration_ms: int = 1000,
     chunk_padding_ms: int = 1000,
 ):
@@ -540,13 +545,14 @@ def main():
     parser = argparse.ArgumentParser(description="Qwen3 ASR Transcriber")
     parser.add_argument("-d", "--device", choices=["cuda", "xpu", "cpu"], help="Torch device to use (cuda, xpu, cpu)")
     parser.add_argument("-l", "--language", choices=["ch", "en", "jp"], help="Language: ch=Chinese, en=English, jp=Japanese")
-    parser.add_argument("-c", "--concurrency", type=int, default=5, help="Number of concurrent transcribe tasks (default: 5)")
-    parser.add_argument("-m", "--max_chunk", type=float, default=60.0, help="Maximum chunk duration in seconds for VAD splitting (default: 60)")
-    parser.add_argument("--preprocess", action="store_true", help="Enable audio preprocessing (high-pass filter + AGC)")
+    parser.add_argument("-c", "--concurrency", type=int, default=2, help="Number of concurrent transcribe tasks (default: 2)")
+    parser.add_argument("-m", "--max_chunk", type=float, default=10.0, help="Maximum chunk duration in seconds for VAD splitting (default: 10)")
+    parser.add_argument("-v", "--vad-thres", type=float, default=0.3, help="VAD threshold (default: 0.3)")
+    parser.add_argument("--no-preprocess", action="store_true", help="Disable audio preprocessing (high-pass filter + AGC)")
     parser.add_argument("--highpass", type=float, default=80.0, help="High-pass filter cutoff frequency in Hz (default: 80, 0 to disable)")
     parser.add_argument("--no-agc", action="store_true", help="Disable automatic gain control (AGC)")
     parser.add_argument("--debug", action="store_true", help="Debug mode: keep temp files and generate chunk-level LRCs")
-    parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
+    parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi .ts wav mp3 etc)")
     args = parser.parse_args()
 
     # Map language code to full name
@@ -560,7 +566,7 @@ def main():
     input_path = Path(args.input_path)
 
     # Check if it's a video file, extract audio if needed
-    video_extensions = {'.mp4', '.mkv', '.avi'}
+    video_extensions = {'.mp4', '.mkv', '.avi', '.ts'}
     original_input_path = input_path
     temp_dir_to_cleanup = None
     preprocessed_path = None
@@ -569,8 +575,8 @@ def main():
         is_video = True
         input_path, temp_dir_to_cleanup = extract_audio_from_video(input_path)
 
-    # Apply audio preprocessing if enabled
-    if args.preprocess:
+    # Apply audio preprocessing by default, unless --no-preprocess is specified
+    if not args.no_preprocess:
         preprocessed_dir = input_path.parent / f"temp_preprocessed_{input_path.stem}"
         preprocessed_dir.mkdir(parents=True, exist_ok=True)
         preprocessed_path = preprocessed_dir / f"preprocessed_{input_path.stem}.wav"
@@ -616,7 +622,7 @@ def main():
         chunk_temp_dir.mkdir(parents=True, exist_ok=True)
 
         # Split audio first (VAD model will be released after this)
-        chunks = split_audio_with_vad(input_path, chunk_temp_dir, max_chunk_duration=args.max_chunk)
+        chunks = split_audio_with_vad(input_path, chunk_temp_dir, max_chunk_duration=args.max_chunk, vad_threshold=args.vad_thres)
 
     # Now load ASR model (VAD has been released if used)
     start_time = time.time()
