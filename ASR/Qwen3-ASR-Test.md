@@ -9,6 +9,7 @@
 - **多语言支持**：中文 (ch)、英文 (en)、日语 (jp)
 - **多设备支持**：CUDA、XPU、CPU 自动检测
 - **并发转录**：支持多线程并发处理多个音频片段
+- **音频预处理**：支持高通滤波（去除低频噪声）和自动增益控制（AGC）
 - **智能分句**：基于标点符号和时间间隙自动断句
 - **输出格式**：
   - 视频文件 → SRT 字幕格式
@@ -18,11 +19,11 @@
 
 ```bash
 # 安装 Qwen-ASR
-pip install -U qwen-asr pydub torch
+pip install -U qwen-asr pydub torch scipy
 
 # 通过 ModelScope 下载模型（推荐国内用户）
-modelscope download --model Qwen/Qwen3-ASR-1.7B --local_dir ./Qwen3-ASR-1.7B
-modelscope download --model Qwen/Qwen3-ForcedAligner-0.6B --local_dir ./Qwen3-ForcedAligner-0.6B
+modelscope download --model Qwen/Qwen3-ASR-1.7B --local_dir ./Qwen/Qwen3-ASR-1.7B
+modelscope download --model Qwen/Qwen3-ForcedAligner-0.6B --local_dir ./Qwen/Qwen3-ForcedAligner-0.6B
 ```
 
 ## 使用方法
@@ -30,10 +31,19 @@ modelscope download --model Qwen/Qwen3-ForcedAligner-0.6B --local_dir ./Qwen3-Fo
 ```bash
 python Qwen3-ASR-Test.py [选项] <输入文件>
 
-# 选项
+# 基本选项
 -d, --device       设备选择：cuda / xpu / cpu（默认自动检测）
 -l, --language     语言：ch（中文）/ en（英文）/ jp（日语）
 -c, --concurrency  并发转录任务数（默认 5）
+-m, --max_chunk    VAD 分段的最大时长（秒，默认 60）
+
+# 音频预处理选项
+--preprocess       启用音频预处理（高通滤波 + AGC）
+--highpass 80      高通滤波器截止频率（Hz，默认 80，设为 0 禁用）
+--no-agc           禁用自动增益控制（AGC）
+
+# 调试选项
+--debug            调试模式：保留临时文件并生成 chunk 级别的 LRC
 
 # 示例
 # 转录中文音频
@@ -44,26 +54,50 @@ python Qwen3-ASR-Test.py -d cuda -l en video.mp4
 
 # 使用 8 个并发任务
 python Qwen3-ASR-Test.py -c 8 -l ch long_audio.wav
+
+# 启用音频预处理（高通滤波 + AGC）
+python Qwen3-ASR-Test.py --preprocess -l ch noisy_audio.wav
+
+# 自定义高通截止频率为 100Hz
+python Qwen3-ASR-Test.py --preprocess --highpass 100 input.wav
+
+# 只使用高通滤波，不使用 AGC
+python Qwen3-ASR-Test.py --preprocess --no-agc input.wav
 ```
 
 ## 工作流程
 
 1. **视频处理**：若是视频文件，自动提取音频
-2. **VAD 分段**：长音频（>3 分钟）自动使用 Silero VAD 分段
-3. **ASR 转录**：调用 Qwen3-ASR 模型进行语音识别，返回带时间戳的文本
-4. **文本对齐**：将完整文本与时间戳对齐，处理标点符号
-5. **分句生成**：基于标点符号和时间间隙智能断句
-6. **格式输出**：生成 SRT 字幕或 LRC 歌词文件
+2. **音频预处理（可选）**：
+   - 高通滤波：去除低频背景噪声（默认 80Hz）
+   - 自动增益控制：标准化音频音量
+3. **VAD 分段**：长音频（>3 分钟）自动使用 Silero VAD 分段
+4. **ASR 转录**：调用 Qwen3-ASR 模型进行语音识别，返回带时间戳的文本
+5. **文本对齐**：将完整文本与时间戳对齐，处理标点符号
+6. **分句生成**：基于标点符号和时间间隙智能断句
+7. **格式输出**：生成 SRT 字幕或 LRC 歌词文件
 
 ## 核心函数
 
 | 函数 | 功能 |
 |------|------|
+| `preprocess_audio()` | 音频预处理：高通滤波 + 自动增益控制 |
+| `apply_highpass_filter()` | 应用高通滤波器去除低频噪声 |
 | `split_audio_with_vad()` | 使用 Silero VAD 分段长音频 |
 | `transcribe_chunks()` | 并发转录多个音频片段 |
 | `build_sentence_segments()` | 智能分句，构建时间轴 |
 | `write_srt()` / `write_lrc()` | 输出字幕/歌词文件 |
 | `extend_segment_end_times()` | 调整字幕时间轴，使播放更流畅 |
+
+## 音频预处理说明
+
+当音频质量较差（背景噪声大、音量不均衡）时，可以使用 `--preprocess` 参数启用预处理：
+
+- **高通滤波**：移除 80Hz 以下的低频噪声（如空调声、电流声等），可通过 `--highpass` 调整截止频率
+- **自动增益控制**：自动将音频音量标准化到合适水平，避免音量忽大忽小
+
+**VAD 参数说明**：
+- `vad_threshold` 默认值为 0.35，值越大越容易切分（更容易检测到静音），值越小越不容易切分
 
 ## 输出示例
 

@@ -5,7 +5,8 @@ import subprocess
 import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
-from pydub import AudioSegment
+from pydub import AudioSegment, effects
+from scipy import signal
 from qwen_asr import Qwen3ASRModel
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -308,6 +309,51 @@ def get_audio_duration(audio_path: Path) -> float:
     return len(audio) / 1000.0
 
 
+def apply_highpass_filter(audio: AudioSegment, cutoff_freq: float = 80.0) -> AudioSegment:
+    """Apply high-pass filter to audio to remove low-frequency noise"""
+    samples = np.array(audio.get_array_of_samples())
+    sample_rate = audio.frame_rate
+
+    # Design high-pass Butterworth filter
+    nyquist = 0.5 * sample_rate
+    normalized_cutoff = cutoff_freq / nyquist
+    b, a = signal.butter(4, normalized_cutoff, btype='high', analog=False)
+
+    # Apply filter
+    filtered_samples = signal.filtfilt(b, a, samples)
+
+    # Convert back to int16
+    filtered_samples = np.clip(filtered_samples, -32768, 32767).astype(np.int16)
+
+    # Create new AudioSegment
+    filtered_audio = AudioSegment(
+        filtered_samples.tobytes(),
+        frame_rate=audio.frame_rate,
+        sample_width=audio.sample_width,
+        channels=audio.channels
+    )
+    return filtered_audio
+
+
+def preprocess_audio(audio_path: Path, output_path: Path, highpass_cutoff: float = 80.0, use_agc: bool = True) -> Path:
+    """Apply audio preprocessing: high-pass filter + automatic gain control"""
+    print(f"Preprocessing audio: highpass={highpass_cutoff}Hz, AGC={use_agc}")
+
+    audio = AudioSegment.from_file(str(audio_path))
+
+    # Apply high-pass filter
+    if highpass_cutoff > 0:
+        audio = apply_highpass_filter(audio, highpass_cutoff)
+
+    # Apply automatic gain control (normalize)
+    if use_agc:
+        audio = effects.normalize(audio)
+
+    audio.export(str(output_path), format="wav")
+    print(f"Preprocessed audio saved to: {output_path.resolve()}")
+    return output_path
+
+
 def split_audio_with_vad(
     audio_path: Path,
     temp_dir: Path,
@@ -496,6 +542,9 @@ def main():
     parser.add_argument("-l", "--language", choices=["ch", "en", "jp"], help="Language: ch=Chinese, en=English, jp=Japanese")
     parser.add_argument("-c", "--concurrency", type=int, default=5, help="Number of concurrent transcribe tasks (default: 5)")
     parser.add_argument("-m", "--max_chunk", type=float, default=60.0, help="Maximum chunk duration in seconds for VAD splitting (default: 60)")
+    parser.add_argument("--preprocess", action="store_true", help="Enable audio preprocessing (high-pass filter + AGC)")
+    parser.add_argument("--highpass", type=float, default=80.0, help="High-pass filter cutoff frequency in Hz (default: 80, 0 to disable)")
+    parser.add_argument("--no-agc", action="store_true", help="Disable automatic gain control (AGC)")
     parser.add_argument("--debug", action="store_true", help="Debug mode: keep temp files and generate chunk-level LRCs")
     parser.add_argument("input_path", help="Path to audio or video file (supported: .mp4 .mkv .avi wav mp3 etc)")
     args = parser.parse_args()
@@ -514,10 +563,25 @@ def main():
     video_extensions = {'.mp4', '.mkv', '.avi'}
     original_input_path = input_path
     temp_dir_to_cleanup = None
+    preprocessed_path = None
     is_video = False
     if input_path.suffix.lower() in video_extensions:
         is_video = True
         input_path, temp_dir_to_cleanup = extract_audio_from_video(input_path)
+
+    # Apply audio preprocessing if enabled
+    if args.preprocess:
+        preprocessed_dir = input_path.parent / f"temp_preprocessed_{input_path.stem}"
+        preprocessed_dir.mkdir(parents=True, exist_ok=True)
+        preprocessed_path = preprocessed_dir / f"preprocessed_{input_path.stem}.wav"
+        input_path = preprocess_audio(
+            input_path,
+            preprocessed_path,
+            highpass_cutoff=args.highpass,
+            use_agc=not args.no_agc
+        )
+        if temp_dir_to_cleanup is None:
+            temp_dir_to_cleanup = preprocessed_dir
 
     if args.device:
         if args.device == "cuda":
