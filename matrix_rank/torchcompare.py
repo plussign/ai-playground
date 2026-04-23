@@ -2,6 +2,11 @@ import time
 import torch
 import torch.nn.functional as F
 
+
+def _format_bytes(num_bytes: int) -> str:
+    gb = num_bytes / (1024 ** 3)
+    return f"{gb:.2f} GB"
+
 DURATION = 10  # seconds per benchmark
 BATCH_SIZE = 128
 MATMUL_SIZE = 1024
@@ -42,7 +47,7 @@ def compile_jit(op, example_inputs):
 
 
 def maybe_warmup(device: str, op, *inputs):
-    if device in {"cuda", "xpu"}:
+    if device in {"cuda", "xpu", "mps"}:
         op(*inputs)
         sync(device)
 
@@ -64,6 +69,10 @@ def check_devices():
     if torch.cuda.is_available():
         devices.append("cuda")
         print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+    if torch.backends.mps.is_available():
+        devices.append("mps")
+        mps_mem = _format_bytes(torch.mps.recommended_max_memory())
+        print(f"MPS device: Apple Metal Performance Shaders (recommended max memory: {mps_mem})")
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         devices.append("xpu")
         print(f"XPU device: {torch.xpu.get_device_name(0)}")
@@ -77,6 +86,8 @@ def check_devices():
 def sync(device: str):
     if device == "cuda":
         torch.cuda.synchronize()
+    if device == "mps":
+        torch.mps.synchronize()
     if device == "xpu":
         torch.xpu.synchronize()
 
@@ -165,6 +176,8 @@ def main():
                 iters = fn(dev)
             except Exception as e:
                 print(f" SKIPPED ({e})")
+                if dev == "mps":
+                    print("       hint: this op may not be implemented or fully optimized on MPS yet.")
                 iters = None
                 continue
             results[name][dev] = iters

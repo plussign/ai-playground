@@ -50,3 +50,4 @@ tts_client/**/*.sln.docstates
 models/
 *db/
 ASR/Qwen/**
+*.tmp
