@@ -4,6 +4,7 @@
 import sys
 import os
 import re
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
@@ -36,13 +37,13 @@ def build_srt(subtitles):
     return ''.join(srt_content)
 
 
-def translate_text_with_context(text, before_texts, after_texts):
+def translate_text_with_context(text, before_texts, after_texts, api_key, base_url, model):
     """
     使用本地 Ollama 模型将日语翻译为中文，带上下文参考
     """
     client = OpenAI(
-        api_key="ollama",
-        base_url="http://localhost:8001/v1",
+        api_key=api_key,
+        base_url=base_url,
     )
 
     context_parts = []
@@ -61,7 +62,7 @@ def translate_text_with_context(text, before_texts, after_texts):
     prompt += f"\n当前需要翻译的文本：\n{text}"
 
     response = client.chat.completions.create(
-        model="huihui_ai/hunyuan-mt-abliterated",
+        model=model,
         messages=[
             {
                 "role": "user",
@@ -75,7 +76,7 @@ def translate_text_with_context(text, before_texts, after_texts):
     return response.choices[0].message.content.strip()
 
 
-def translate_subtitle(index, subtitle, all_subtitles):
+def translate_subtitle(index, subtitle, all_subtitles, api_key, base_url, model):
     """翻译单个字幕条目，带上下文"""
     try:
         # 获取前后各3段字幕
@@ -91,7 +92,10 @@ def translate_subtitle(index, subtitle, all_subtitles):
         translated_text = translate_text_with_context(
             subtitle['text'],
             before_texts,
-            after_texts
+            after_texts,
+            api_key,
+            base_url,
+            model
         )
 
         result = subtitle.copy()
@@ -103,11 +107,14 @@ def translate_subtitle(index, subtitle, all_subtitles):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("用法: python trans_srt.py <srt文件路径>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='翻译SRT字幕文件')
+    parser.add_argument('source_file', help='SRT文件路径')
+    parser.add_argument('-k', '--api-key', default='ollama', help='API密钥 (默认: ollama)')
+    parser.add_argument('-b', '--base-url', default='http://localhost:8001/v1', help='API基础URL (默认: http://localhost:8001/v1)')
+    parser.add_argument('-m', '--model', default='huihui_ai/hunyuan-mt-abliterated', help='模型名称 (默认: huihui_ai/hunyuan-mt-abliterated)')
 
-    source_file = sys.argv[1]
+    args = parser.parse_args()
+    source_file = args.source_file
 
     if not os.path.exists(source_file):
         print(f"错误: 文件 {source_file} 不存在")
@@ -126,7 +133,7 @@ def main():
     with ThreadPoolExecutor(max_workers=5) as executor:
         # 提交所有翻译任务
         futures = {
-            executor.submit(translate_subtitle, i, sub, subtitles): i
+            executor.submit(translate_subtitle, i, sub, subtitles, args.api_key, args.base_url, args.model): i
             for i, sub in enumerate(subtitles)
         }
 
